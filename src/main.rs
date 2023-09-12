@@ -1,14 +1,15 @@
 #![forbid(unsafe_code)]
 
-use std::rc::Rc;
-
 use anyhow::Result;
 use clap::Parser;
 use elf::{endian::AnyEndian, ElfBytes};
 use log::{debug, error, info};
+use memory::Memory;
+
+mod memory;
 
 const SP: usize = 2;
-const STACK_START: u64 = 0x7fffffffffffffff;
+const STACK_START: u64 = 0x8000000000000000;
 
 // addressing
 struct Emulator {
@@ -24,68 +25,6 @@ struct Emulator {
     performance_counter: u64,
 }
 
-struct Memory {
-    text_addr: u64,
-    text: Box<[u8]>,
-    data: Box<[u8]>,
-
-    // reverse indexed
-    stack: Vec<u8>,
-    // heap: Vec<u8>,
-}
-
-impl Memory {
-    fn new(text_addr: u64, text: &[u8]) {}
-
-    fn load_u64(&self, index: u64) -> u64 {
-        return (self.load_u32(index) as u64) | ((self.load_u32(index + 4) as u64) << 32);
-    }
-
-    fn load_u32(&self, index: u64) -> u32 {
-        // let index = self.pc;
-        return (self.load_byte(index) as u32)
-            | ((self.load_byte(index + 1) as u32) << 8)
-            | ((self.load_byte(index + 2) as u32) << 16)
-            | ((self.load_byte(index + 3) as u32) << 24);
-    }
-
-    fn load_byte(&self, idx: u64) -> u8 {
-        if idx >= self.text_addr && idx <= self.text_addr + self.text.len() as u64 {
-            self.text[(idx - self.text_addr) as usize]
-        } else if idx <= STACK_START {
-            self.stack[(STACK_START - idx) as usize]
-        } else {
-            0
-        }
-    }
-
-    fn store_u64(&mut self, index: u64, data: u64) {
-        self.store_u32(index, (data >> 32) as u32);
-        self.store_u32(index + 4, (data >> 32) as u32);
-    }
-
-    fn store_u32(&mut self, index: u64, data: u32) {
-        self.store_byte(index, (data >> 24) as u8);
-        self.store_byte(index + 1, (data >> 16) as u8);
-        self.store_byte(index + 2, (data >> 8) as u8);
-        self.store_byte(index + 3, (data) as u8);
-    }
-
-    fn store_byte(&mut self, idx: u64, data: u8) {
-        if idx >= self.text_addr && idx <= self.text_addr + self.text.len() as u64 {
-            panic!("Attempting to store memory in read-only location: {}", idx);
-        } else if idx <= STACK_START {
-            let real_idx = (STACK_START - idx) as usize;
-
-            if self.stack.len() < real_idx {
-                self.stack.resize(real_idx, 0);
-            }
-
-            self.stack[real_idx as usize] = data;
-        }
-    }
-}
-
 impl Emulator {
     fn new(entry: u64, memory: Memory) -> Self {
         let mut em = Self {
@@ -97,7 +36,9 @@ impl Emulator {
             performance_counter: 0,
         };
 
-        em.reg[SP] = STACK_START;
+        // STACK_START is actually inaccurate since it's actually the start of the kernel space memory.
+        // So we subtract 8 to get the actual first valid memory address.
+        em.reg[SP] = STACK_START - 8;
 
         em
     }
@@ -228,8 +169,7 @@ impl Emulator {
                     debug!("{:016x} ld    x{}, {}(sp)", self.pc, rd, offset << 1);
                     self.reg[rd as usize] = self
                         .memory
-                        .load_u64((offset << 1) as u64)
-                        .wrapping_add(self.reg[SP]);
+                        .load_u64(((offset << 1) as u64).wrapping_add(self.reg[SP]));
                 } else {
                     error!("C.FLWSP not implemented");
                 }
@@ -443,35 +383,9 @@ fn main() -> Result<()> {
         }
     }
 
-    let text_header = file.section_header_by_name(".text")?.unwrap();
-    let (text_data, text_compression_header) = file.section_data(&text_header)?;
-
-    let data_header = file.section_header_by_name(".data")?.unwrap();
-    let (data_data, data_compression_header) = file.section_data(&text_header)?;
-
-    let bss_header = file.section_header_by_name(".bss")?.unwrap();
-    let (bss_data, bss_compression_header) = file.section_data(&text_header)?;
-
-    if text_compression_header.is_some()
-        || data_compression_header.is_some()
-        || bss_compression_header.is_some()
-    {
-        panic!("This emulator does not implement compression");
-    }
-
     let file_entry = file.ehdr.e_entry;
-
-    let mut emulator = Emulator::new(
-        file_entry,
-        Memory {
-            text_addr: text_header.sh_addr,
-            text: text_data.into(),
-            stack: Vec::new(),
-            data: [data_data, bss_data].concat().into(),
-        },
-    );
-
-    // println!("text addr: {file:?}");
+    let memory = Memory::load_elf(file);
+    let mut emulator = Emulator::new(file_entry, memory);
 
     loop {
         if let Some(exit_code) = emulator.fetch_and_execute() {

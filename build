@@ -1,0 +1,4 @@
+#!/bin/sh
+
+riscv64-linux-gnu-as -march=rv64imac -o $1.o $1.S
+riscv64-linux-gnu-ld -o $1 $1.o

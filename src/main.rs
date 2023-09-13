@@ -58,7 +58,7 @@ impl Emulator {
 
     fn fetch_and_execute(&mut self) -> Option<u64> {
         let inst = self.memory.load_u32(self.pc);
-        self.print_registers();
+        // self.print_registers();
         // println!("{:08x?}", inst);
         self.execute(inst);
 
@@ -67,6 +67,7 @@ impl Emulator {
 
     #[allow(unused)]
     fn print_registers(&self) {
+        println!("stack: {:?}", self.memory.stack);
         println!("x0 (zero):  {:x}", self.reg[0]);
         println!("x1 (ra):    {:x}", self.reg[1]);
         println!("x2 (sp):    {:x}", self.reg[2]);
@@ -142,12 +143,17 @@ impl Emulator {
                 if imm == 0 && rs1 != 0 && rs2 == 0 {
                     debug!("{:016x} jalr  x0, x{}, 0", self.pc, rs1);
                     // self.reg[0] = self.pc.wrapping_add(4);
-                    self.pc = self.reg[rs1 as usize] & (!0b1);
+                    self.pc = (self.reg[rs1 as usize] & (!0b1)) - 2;
                 }
                 // C.MV - Move
                 else if imm == 0 && rs1 != 0 && rs2 != 0 {
                     debug!("{:016x} add   x{}, x0, x{}", self.pc, rs1, rs2);
                     self.reg[rs1] = self.reg[rs2];
+                }
+                // C.ADD - Add
+                else if imm == 1 && rs1 != 0 && rs2 != 0 {
+                    debug!("{:016x} add   x{}, x{}, x{}", self.pc, rs1, rs1, rs2);
+                    self.reg[rs1] = self.reg[rs1] + self.reg[rs2];
                 } else {
                     log::info!("funct3={funct3:03b}, quadrant={quadrant:02b}");
                     error!(
@@ -228,8 +234,14 @@ impl Emulator {
             //
             (0b00, 0b000) => {
                 // C.ADDI4SPN
-                let imm = ((inst >> 4) & 0xFF) << 2;
-                let rd = (inst >> 2) & 0b111;
+
+                // nzuimm[5:4|9:6|2|3]
+                let imm = (((inst >> 6) & 0b1) << 2)
+                    | (((inst >> 5) & 0b1) << 3)
+                    | (((inst >> 11) & 0b11) << 4)
+                    | (((inst >> 7) & 0b1111) << 6);
+
+                let rd = (inst >> 2) & 0b111 + 8;
 
                 debug!("{:016x} addi  x{}, sp, {}", self.pc, rd, imm);
                 self.reg[rd as usize] = self.reg[SP] + imm as u64;
@@ -285,24 +297,18 @@ impl Emulator {
                 }
             }
 
-            // ADD
-            0b0110011 => {
-                debug!("{:016x} add   x{}, x{}, x{}", self.pc, rd, rs1, rs2);
-                self.reg[rd] = self.reg[rs1].wrapping_add(self.reg[rs2]);
-            }
-
             // ADDI
             0b0010011 => {
+                let imm = (inst & 0xFFF00000) as i32 as i64 >> 20;
                 match funct3 {
                     0b000 => {
                         // 12 byte immediate, signed
-                        let imm = (inst & 0xFFF00000) as i32 as i64 >> 20;
                         debug!("{:016x} addi  x{}, x{}, {}", self.pc, rd, rs1, imm);
                         self.reg[rd] = self.reg[rs1].wrapping_add(imm as u64);
                     }
                     0b111 => {
-                        debug!("{:016x} andi  x{}, x{}, x{}", self.pc, rd, rs1, rs2);
-                        self.reg[rd] = self.reg[rs1] & self.reg[rs2];
+                        debug!("{:016x} andi  x{}, x{}, {}", self.pc, rd, rs1, imm);
+                        self.reg[rd] = self.reg[rs1] & imm as u64;
                     }
                     _ => {
                         unimplemented!(
@@ -319,6 +325,41 @@ impl Emulator {
                 let imm = (inst & 0xFFFFF000) as i32 as i64 as u64;
                 debug!("{:016x} auipc x{}, 0x{:x}", self.pc, rd, imm);
                 self.reg[rd] = self.pc.wrapping_add(imm);
+            }
+
+            // STORE
+            0b0100011 => {
+                let imm = ((inst >> 7) & 0b11111) | (((inst >> 25) & 0b1111111) << 5);
+                let addr = self.reg[rs1].wrapping_add(imm as u64);
+
+                match funct3 {
+                    // SD
+                    0b011 => {
+                        debug!("{:016x} sd    x{}, {}(x{})", self.pc, rs2, imm, rs1);
+                        self.memory.store_u64(addr, self.reg[rs2]);
+                    }
+                    // SB
+                    0b000 => {
+                        unimplemented!("SB unimplemented");
+                    }
+                    // SH
+                    0b001 => {
+                        unimplemented!("SH unimplemented");
+                    }
+                    // SW
+                    0b010 => {
+                        unimplemented!("SW unimplemented");
+                    }
+                    _ => {
+                        unimplemented!("Unknown store instruction unimplemented");
+                    }
+                }
+            }
+
+            // ADD
+            0b0110011 => {
+                debug!("{:016x} add   x{}, x{}, x{}", self.pc, rd, rs1, rs2);
+                self.reg[rd] = self.reg[rs1].wrapping_add(self.reg[rs2]);
             }
 
             // JAL - Jump Address Long

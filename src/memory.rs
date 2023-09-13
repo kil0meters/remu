@@ -35,9 +35,7 @@ impl MemoryRange {
 
 pub struct Memory {
     ranges: Vec<MemoryRange>,
-    // reverse indexed
-    stack: Vec<u8>,
-    // heap: Vec<u8>,
+    pub stack: Vec<u8>,
 }
 
 impl Memory {
@@ -106,9 +104,9 @@ impl Memory {
         }
 
         // else try to load from stack
-        debug!("{STACK_START:x} - {idx:x}");
+        // debug!("{STACK_START:x} - {idx:x}");
         let stack_idx = STACK_START - idx;
-        debug!("Attemping to load stack index = {stack_idx}");
+        // debug!("Attemping to load stack index = {stack_idx}");
         if idx <= STACK_START {
             // TODO: It's possible that this extends the stack too much. IDK really
             if (stack_idx as usize) >= self.stack.len() {
@@ -140,6 +138,18 @@ impl Memory {
             }
         }
 
-        panic!("Address not in any mapped memory");
+        // debug!("{STACK_START:x} - {idx:x}");
+        let stack_idx = STACK_START - idx;
+        // debug!("Attemping to load stack index = {stack_idx}");
+        if idx <= STACK_START {
+            // TODO: It's possible that this extends the stack too much. IDK really
+            if (stack_idx as usize) >= self.stack.len() {
+                self.stack.resize(stack_idx as usize + 1, 0);
+            }
+
+            self.stack[stack_idx as usize] = data;
+        } else {
+            panic!("Attempted to store to address not mapped to memoery: {idx:x}");
+        }
     }
 }

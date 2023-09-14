@@ -58,9 +58,11 @@ impl Emulator {
 
     fn fetch_and_execute(&mut self) -> Option<u64> {
         let inst = self.memory.load_u32(self.pc);
-        // self.print_registers();
-        // println!("{:08x?}", inst);
+        self.print_registers();
         self.execute(inst);
+
+        let mut res = String::new();
+        std::io::stdin().read_line(&mut res).unwrap();
 
         self.exit_code
     }
@@ -231,7 +233,18 @@ impl Emulator {
             // (0b10, 0b000) => {
             //     // C.SLLI
             // }
-            //
+            (0b00, 0b011) => {
+                // C.LD
+                let rd = ((inst >> 2) & 0b111) + 8;
+                let rs1 = ((inst >> 7) & 0b111) + 8;
+                let imm = ((inst >> 7) & 0b111000) | (((inst >> 5) & 0b111) << 6);
+
+                debug!("{:016x} ld    x{}, {}(x{}) (c.ld)", self.pc, rd, imm, rs1);
+
+                let addr = self.reg[rs1 as usize].wrapping_add(imm as u64);
+                self.reg[rd as usize] = self.memory.load_u64(addr) as u64;
+            }
+
             (0b00, 0b000) => {
                 // C.ADDI4SPN
 

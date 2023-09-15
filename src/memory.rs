@@ -104,7 +104,7 @@ impl Memory {
         }
 
         // else try to load from stack
-        // debug!("{STACK_START:x} - {idx:x}");
+        debug!("{STACK_START:x} - {idx:x}");
         let stack_idx = STACK_START - idx;
         // debug!("Attemping to load stack index = {stack_idx}");
         if idx <= STACK_START {
@@ -120,7 +120,7 @@ impl Memory {
     }
 
     pub fn store_u64(&mut self, index: u64, data: u64) {
-        self.store_u32(index, (data >> 32) as u32);
+        self.store_u32(index, data as u32);
         self.store_u32(index + 4, (data >> 32) as u32);
     }
 

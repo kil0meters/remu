@@ -38,7 +38,7 @@ impl Emulator {
 
         // STACK_START is actually inaccurate since it's actually the start of the kernel space memory.
         // So we subtract 8 to get the actual first valid memory address.
-        em.reg[SP] = STACK_START - 8;
+        em.reg[SP] = STACK_START - 64;
 
         em
     }
@@ -195,7 +195,19 @@ impl Emulator {
                 );
 
                 self.memory
-                    .store_u64(offset + self.reg[SP], self.reg[rs1 as usize]);
+                    .store_u64(offset.wrapping_add(self.reg[SP]), self.reg[rs1 as usize]);
+            }
+
+            (0b01, 0b000) => {
+                // C.ADDI
+
+                // TODO: Probably doesn't account for negative numbers correctly at all. Beware!
+
+                let imm = (((inst >> 12) & 0b1) << 5) | ((inst >> 2) & 0b11111);
+                let rd = (inst >> 7) & 0b11111;
+
+                debug!("{:016x} addi  x{}, x{}, {}", self.pc, rd, rd, imm);
+                self.reg[rd as usize] = self.reg[rd as usize].wrapping_add(imm as u64);
             }
 
             (0b01, 0b010) => {
@@ -228,6 +240,32 @@ impl Emulator {
                     debug!("{:016x} lui   x{}, 0x{:x}", self.pc, rd, imm << 12);
                     self.reg[rd as usize] = imm << 12;
                 }
+            }
+
+            (0b01, 0b111) => {
+                // !!! BRANCH IMPLEMENTATION !!!
+                // C.BNEZ
+
+                let imm = ((inst & 0b110000000000) >> 7) as u64 // imm[4:3]
+                        | (((inst & 0b1000000000000) >> 5) as i8 as u64) << 1 // imm[8]
+                        | ((inst & 0b100) << 3) as u64 // imm[5]
+                        | ((inst & 0b11000) >> 2) as u64 // imm[2:1]
+                        | ((inst & 0b1100000) << 1) as u64; // imm[7:6]
+
+                let rs1 = (inst >> 7) & 0b111 + 8;
+
+                let addr = self.pc.wrapping_add(imm as u64);
+
+                debug!("{:016x} bnez   x{}, {:x}", self.pc, rs1, addr);
+
+                if self.reg[rs1 as usize] != 0 {
+                    self.pc = addr;
+                }
+
+                // let imm = ((((inst >> 12) & 0b1) as i8 as i16 as u16) << 8)
+                //     | (((inst >> 5) & 0b111) << 7)
+                //     | (((inst >> 2) & 0b1) << 5)
+                //     | (((inst >> )))
             }
 
             // (0b10, 0b000) => {
@@ -385,9 +423,11 @@ impl Emulator {
                     | ((inst >> 9) & 0x800) as u64 // imm[11]
                     | ((inst >> 20) & 0x7fe) as u64; // imm[10:1]
 
-                debug!("{:016x} jal   x{}, 0x{:x}", self.pc, rd, imm);
+                let addr = self.pc.wrapping_add(imm as u64);
+
+                debug!("{:016x} jal   x{}, {:x}", self.pc, rd, addr);
                 self.reg[rd] = self.pc.wrapping_add(4);
-                self.pc = self.pc.wrapping_add(imm as u64).wrapping_sub(4);
+                self.pc = addr.wrapping_sub(4); // we subtract 4 here to account for what's added to the pc at the end of this function
             }
 
             // ECALL - Execute syscall

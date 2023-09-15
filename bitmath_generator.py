@@ -38,20 +38,19 @@ class Range():
 #
 # output:
 
-if sys.argv[1] == 'c':
-    for arg in sys.argv[2:]:
-        start, end = arg.split("=")
+for arg in sys.argv[1:]:
+    start, end = arg.split("=")
 
-        bit_offset = int(start)
+    bit_offset = int(start)
 
-        ranges = end.split("|")
-        ranges.reverse()
+    ranges = end.split("|")
+    ranges.reverse()
 
-        depth = int(start)
+    depth = int(start)
 
-        for r in ranges:
-            r = Range(r)
+    for r in ranges:
+        r = Range(r)
 
-            print(r.generate_mask(depth))
-            depth += len(r);
+        print(r.generate_mask(depth))
+        depth += len(r);
 

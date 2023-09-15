@@ -125,10 +125,10 @@ impl Memory {
     }
 
     pub fn store_u32(&mut self, index: u64, data: u32) {
-        self.store_byte(index, (data >> 24) as u8);
-        self.store_byte(index + 1, (data >> 16) as u8);
-        self.store_byte(index + 2, (data >> 8) as u8);
-        self.store_byte(index + 3, (data) as u8);
+        self.store_byte(index + 3, (data >> 24) as u8);
+        self.store_byte(index + 2, (data >> 16) as u8);
+        self.store_byte(index + 1, (data >> 8) as u8);
+        self.store_byte(index + 0, (data) as u8);
     }
 
     pub fn store_byte(&mut self, idx: u64, data: u8) {

@@ -9,6 +9,15 @@ use memory::Memory;
 mod memory;
 
 const SP: usize = 2;
+const A0: usize = 10;
+const A1: usize = 11;
+const A2: usize = 12;
+const A3: usize = 13;
+const A4: usize = 14;
+const A5: usize = 15;
+const A6: usize = 16;
+const A7: usize = 17;
+
 const STACK_START: u64 = 0x8000000000000000;
 
 // addressing
@@ -38,17 +47,25 @@ impl Emulator {
 
         // STACK_START is actually inaccurate since it's actually the start of the kernel space memory.
         // So we subtract 8 to get the actual first valid memory address.
-        em.reg[SP] = STACK_START - 64;
+        em.reg[SP] = STACK_START - 256;
 
         em
     }
 
     // emulates linux syscalls
-    fn syscall(&mut self, id: u64, argument: u64) {
+    fn syscall(&mut self, id: u64) {
+        let arg = self.reg[A0];
+
         match id {
+            // FACCESSAT
+            48 => {
+                self.reg[A0] = 0;
+                // TODO: currently just noop (maybe that's fine, who knows)
+            }
+
             // EXIT
             93 => {
-                self.exit_code = Some(argument);
+                self.exit_code = Some(arg);
             }
             _ => {
                 unimplemented!("syscall {id} not implemented.");
@@ -61,15 +78,17 @@ impl Emulator {
         self.print_registers();
         self.execute(inst);
 
-        let mut res = String::new();
-        std::io::stdin().read_line(&mut res).unwrap();
+        // let mut res = String::new();
+        // std::io::stdin().read_line(&mut res).unwrap();
 
+        self.fuel_counter += 1;
         self.exit_code
     }
 
     #[allow(unused)]
     fn print_registers(&self) {
-        println!("stack: {:?}", self.memory.stack);
+        println!("stack: {:x?}", self.memory.stack);
+        println!("fuel consumed: {}", self.fuel_counter);
         println!("x0 (zero):  {:x}", self.reg[0]);
         println!("x1 (ra):    {:x}", self.reg[1]);
         println!("x2 (sp):    {:x}", self.reg[2]);
@@ -242,6 +261,68 @@ impl Emulator {
                 }
             }
 
+            (0b01, 0b100) => {
+                let funct2 = (inst >> 10) & 0b11;
+
+                match funct2 {
+                    // C.SRLI
+                    0b00 => {
+                        let imm = (inst & 0b1000000000000) >> 7 // imm[5]
+                                | (inst & 0b1111100) >> 2; // imm[4:0]
+
+                        let rd = (((inst >> 7) & 0b111) + 8) as usize;
+
+                        if imm == 0 {
+                            panic!("Immediate must be nonzero");
+                        }
+
+                        debug!("{:016x} srli  x{}, x{}, {}", self.pc, rd, rd, imm);
+                        self.reg[rd] = self.reg[rd] >> imm;
+                    }
+                    _ => {
+                        unimplemented!("{inst:0b} {funct2:0b}");
+                    }
+                }
+            }
+
+            (0b01, 0b101) => {
+                let imm = (inst & 0b100) << 3 // imm[5]
+                        | (inst & 0b111000) >> 2 // imm[3:1]
+                        | (inst & 0b1000000) << 1 // imm[7]
+                        | (inst & 0b10000000) >> 1 // imm[6]
+                        | (inst & 0b100000000) << 2 // imm[10]
+                        | (inst & 0b11000000000) >> 1 // imm[9:8]
+                        | (inst & 0b100000000000) >> 7 // imm[4]
+                        | (((inst & 0b1000000000000) << 3) as i16 >> 4) as u16; // imm[11]
+
+                let addr = self.pc.wrapping_add(imm as i16 as u64);
+
+                debug!("{:016x} j     {:x}", self.pc, addr);
+
+                self.pc = addr.wrapping_sub(2);
+            }
+
+            (0b01, 0b110) => {
+                // !!! BRANCH IMPLEMENTATION !!!
+                // C.BEQZ
+
+                let imm = ((inst & 0b110000000000) >> 7) as u64 // imm[4:3]
+                        | (((inst & 0b1000000000000) >> 5) as i8 as u64) << 1 // imm[8]
+                        | ((inst & 0b100) << 3) as u64 // imm[5]
+                        | ((inst & 0b11000) >> 2) as u64 // imm[2:1]
+                        | ((inst & 0b1100000) << 1) as u64; // imm[7:6]
+
+                let rs1 = (inst >> 7) & 0b111 + 8;
+
+                let addr = self.pc.wrapping_add(imm as u64);
+
+                debug!("{:016x} bnez   x{}, {:x}", self.pc, rs1, addr);
+
+                if self.reg[rs1 as usize] == 0 {
+                    self.pc = addr.wrapping_sub(2);
+                }
+            }
+
             (0b01, 0b111) => {
                 // !!! BRANCH IMPLEMENTATION !!!
                 // C.BNEZ
@@ -259,30 +340,13 @@ impl Emulator {
                 debug!("{:016x} bnez   x{}, {:x}", self.pc, rs1, addr);
 
                 if self.reg[rs1 as usize] != 0 {
-                    self.pc = addr;
+                    self.pc = addr.wrapping_sub(2);
                 }
-
-                // let imm = ((((inst >> 12) & 0b1) as i8 as i16 as u16) << 8)
-                //     | (((inst >> 5) & 0b111) << 7)
-                //     | (((inst >> 2) & 0b1) << 5)
-                //     | (((inst >> )))
             }
 
             // (0b10, 0b000) => {
             //     // C.SLLI
             // }
-            (0b00, 0b011) => {
-                // C.LD
-                let rd = ((inst >> 2) & 0b111) + 8;
-                let rs1 = ((inst >> 7) & 0b111) + 8;
-                let imm = ((inst >> 7) & 0b111000) | (((inst >> 5) & 0b111) << 6);
-
-                debug!("{:016x} ld    x{}, {}(x{}) (c.ld)", self.pc, rd, imm, rs1);
-
-                let addr = self.reg[rs1 as usize].wrapping_add(imm as u64);
-                self.reg[rd as usize] = self.memory.load_u64(addr) as u64;
-            }
-
             (0b00, 0b000) => {
                 // C.ADDI4SPN
 
@@ -297,6 +361,50 @@ impl Emulator {
                 debug!("{:016x} addi  x{}, sp, {}", self.pc, rd, imm);
                 self.reg[rd as usize] = self.reg[SP] + imm as u64;
             }
+
+            (0b00, 0b011) => {
+                // C.LD
+                let rd = ((inst >> 2) & 0b111) + 8;
+                let rs1 = ((inst >> 7) & 0b111) + 8;
+                let imm = ((inst >> 7) & 0b111000) | (((inst >> 5) & 0b111) << 6);
+
+                debug!("{:016x} ld    x{}, {}(x{}) (c.ld)", self.pc, rd, imm, rs1);
+
+                let addr = self.reg[rs1 as usize].wrapping_add(imm as u64);
+                self.reg[rd as usize] = self.memory.load_u64(addr) as u64;
+            }
+
+            (0b00, 0b110) => {
+                // C.SW
+                let imm = (inst & 0b1110000000000) >> 7 // imm[5:3]
+                        | (inst & 0b100000) << 1 // imm[6]
+                        | (inst & 0b1000000) >> 4; // imm[2]
+
+                let rs1 = ((inst >> 7) & 0b111) + 8;
+                let rs2 = ((inst >> 2) & 0b111) + 8;
+
+                let addr = self.reg[rs1 as usize].wrapping_add(imm as u64);
+
+                debug!("{:016x} sd    x{}, {}(x{}) (c.sw)", self.pc, rs2, imm, rs1);
+
+                self.memory.store_u32(addr, self.reg[rs2 as usize] as u32);
+            }
+
+            (0b00, 0b111) => {
+                // C.SD
+                let imm = (inst & 0b1110000000000) >> 7 // imm[5:3]
+                        | (inst & 0b1100000) << 1; // imm[7:6]
+
+                let rs1 = ((inst >> 7) & 0b111) + 8;
+                let rs2 = ((inst >> 2) & 0b111) + 8;
+
+                let addr = self.reg[rs1 as usize].wrapping_add(imm as u64);
+
+                debug!("{:016x} sd    x{}, {}(x{}) (c.sd)", self.pc, rs2, imm, rs1);
+
+                self.memory.store_u64(addr, self.reg[rs2 as usize]);
+            }
+
             _ => {
                 log::info!("funct3={funct3:03b}, quadrant={quadrant:02b}");
                 error!(
@@ -378,6 +486,23 @@ impl Emulator {
                 self.reg[rd] = self.pc.wrapping_add(imm);
             }
 
+            0b0011011 => {
+                match funct3 {
+                    // ADDIW
+                    0b000 => {
+                        let imm = ((inst & 0b11111111111100000000000000000000) as i32 >> 20) as u64;
+                        let rs1 = (inst >> 15) & 0b11111;
+                        let rd = (inst >> 7) & 0b11111;
+
+                        debug!("{:016x} addiw x{}, x{}, {}", self.pc, rd, rs1, imm);
+                        self.reg[rd as usize] = self.reg[rs1 as usize].wrapping_add(imm);
+                    }
+                    _ => {
+                        unimplemented!("0011011 funct3={funct3}");
+                    }
+                }
+            }
+
             // STORE
             0b0100011 => {
                 let imm = ((inst >> 7) & 0b11111) | (((inst >> 25) & 0b1111111) << 5);
@@ -399,7 +524,8 @@ impl Emulator {
                     }
                     // SW
                     0b010 => {
-                        unimplemented!("SW unimplemented");
+                        debug!("{:016x} sw    x{}, {}(x{})", self.pc, rs2, imm, rs1);
+                        self.memory.store_u32(addr, self.reg[rs2] as u32);
                     }
                     _ => {
                         unimplemented!("Unknown store instruction unimplemented");
@@ -411,6 +537,63 @@ impl Emulator {
             0b0110011 => {
                 debug!("{:016x} add   x{}, x{}, x{}", self.pc, rd, rs1, rs2);
                 self.reg[rd] = self.reg[rs1].wrapping_add(self.reg[rs2]);
+            }
+
+            // !!! BRANCH IMPLEMENTATION !!!
+            0b1100011 => {
+                // probably needs to be sign extended or some shit.
+                let imm = (inst & 0b1111110000000000000000000000000) >> 20  // imm[10:5]
+                        | ((inst & 0b10000000000000000000000000000000) as i32 >> 19) as u32 // imm[12]
+                        | (inst & 0b10000000) << 4 // imm[11]
+                        | (inst & 0b111100000000) >> 7; // imm[4:1]
+
+                let rs2 = ((inst >> 20) & 0b11111) as usize;
+                let rs1 = ((inst >> 15) & 0b11111) as usize;
+
+                let addr = self.pc.wrapping_add(imm as i32 as u64);
+
+                let condition;
+
+                match funct3 {
+                    // BEQ
+                    0b000 => {
+                        debug!("{:016x} beq   x{}, x{}, {:x}", self.pc, rs1, rs2, addr);
+                        condition = self.reg[rs1] == self.reg[rs2];
+                    }
+                    // BNE
+                    0b001 => {
+                        debug!("{:016x} bne   x{}, x{}, {:x}", self.pc, rs1, rs2, addr);
+                        condition = self.reg[rs1] != self.reg[rs2];
+                    }
+                    // BLT
+                    0b100 => {
+                        debug!("{:016x} blt   x{}, x{}, {:x}", self.pc, rs1, rs2, addr);
+                        condition = (self.reg[rs1] as i64) < self.reg[rs2] as i64;
+                    }
+                    // BGE
+                    0b101 => {
+                        debug!("{:016x} bge   x{}, x{}, {:x}", self.pc, rs1, rs2, addr);
+                        condition = (self.reg[rs1] as i64) >= self.reg[rs2] as i64;
+                    }
+                    // BLTU
+                    0b110 => {
+                        debug!("{:016x} bltu  x{}, x{}, {:x}", self.pc, rs1, rs2, addr);
+                        condition = self.reg[rs1] < self.reg[rs2];
+                    }
+                    // BGEU
+                    0b111 => {
+                        debug!("{:016x} bgeu  x{}, x{}, {:x}", self.pc, rs1, rs2, addr);
+                        condition = self.reg[rs1] >= self.reg[rs2];
+                    }
+
+                    _ => {
+                        unimplemented!("Unknown instruction encoding, func3 for BRANCH")
+                    }
+                }
+
+                if condition {
+                    self.pc = addr.wrapping_sub(4);
+                }
             }
 
             // JAL - Jump Address Long
@@ -432,10 +615,9 @@ impl Emulator {
 
             // ECALL - Execute syscall
             0b1110011 => {
-                let id = self.reg[17];
-                let arg = self.reg[10];
+                let id = self.reg[A7];
 
-                self.syscall(id, arg);
+                self.syscall(id);
             }
 
             _ => {

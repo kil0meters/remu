@@ -68,9 +68,24 @@ impl Emulator {
                 self.exit_code = Some(arg);
             }
 
+            // EXIT_GROUP
+            94 => {
+                self.exit_code = Some(arg);
+            }
+
+            // SET_TID_ADDRESS
+            96 => {
+                // noop
+            }
+
+            // SET_ROBUST_LIST
+            99 => {
+                // noop
+            }
+
             // BRK - man 2 brk
             214 => {
-                self.reg[A0] = self.memory.brk(self.reg[A0]);
+                self.reg[A0] = self.memory.brk(arg);
             }
 
             // NMAP - man 2 mmap
@@ -88,7 +103,7 @@ impl Emulator {
 
     fn fetch_and_execute(&mut self) -> Option<u64> {
         let inst = self.memory.load_u32(self.pc);
-        // self.print_registers();
+        self.print_registers();
         self.execute(inst);
 
         // let mut res = String::new();
@@ -175,7 +190,7 @@ impl Emulator {
                 let rs1 = ((inst >> 7) & 0b11111) as usize;
                 let rs2 = ((inst >> 2) & 0b11111) as usize;
 
-                // C.JR - Jump Regsiter
+                // C.JR - ret
                 if imm == 0 && rs1 != 0 && rs2 == 0 {
                     debug!("{:016x} jalr  x0, x{}, 0", self.pc, rs1);
                     // self.reg[0] = self.pc.wrapping_add(4);
@@ -202,16 +217,16 @@ impl Emulator {
 
             (0b10, 0b011) => {
                 let rd = (inst >> 7) & 0b11111;
-                let offset = ((inst >> 12 & 0b1) << 4) // offset 5
-                | ((inst >> 5 & 0b11) << 2) // offset[4:3]
-                | ((inst >> 2 & 0b111) << 5); // offset[8:6]
+                let imm = (inst & 0b1000000000000) >> 7 // imm[5]
+                        | (inst & 0b11100) << 4 // imm[8:6]
+                        | (inst & 0b1100000) >> 2; // imm[4:3]
 
                 if rd != 0 {
                     // C.LDSP
-                    debug!("{:016x} ld    x{}, {}(sp)", self.pc, rd, offset << 1);
+                    debug!("{:016x} ld    x{}, {}(sp)", self.pc, rd, imm);
                     self.reg[rd as usize] = self
                         .memory
-                        .load_u64(((offset << 1) as u64).wrapping_add(self.reg[SP]));
+                        .load_u64((imm as u64).wrapping_add(self.reg[SP]));
                 } else {
                     error!("C.FLWSP not implemented");
                 }
@@ -235,18 +250,34 @@ impl Emulator {
             (0b01, 0b000) => {
                 // C.ADDI
 
-                // TODO: Probably doesn't account for negative numbers correctly at all. Beware!
+                let imm = (((inst & 0b1000000000000) << 3) as i16 >> 10) // imm[5]
+                        | (inst & 0b1111100) as i16 >> 2; // imm[4:0]
 
-                let imm = (((inst >> 12) & 0b1) << 5) | ((inst >> 2) & 0b11111);
                 let rd = (inst >> 7) & 0b11111;
 
                 debug!("{:016x} addi  x{}, x{}, {}", self.pc, rd, rd, imm);
                 self.reg[rd as usize] = self.reg[rd as usize].wrapping_add(imm as u64);
             }
 
+            (0b01, 0b001) => {
+                // C.ADDIW
+
+                let imm = (((inst & 0b1000000000000) << 3) as i16 >> 10) // imm[5]
+                        | (inst & 0b1111100) as i16 >> 2; // imm[4:0]
+
+                let rd = (inst >> 7) & 0b11111;
+
+                debug!("{:016x} addiw x{}, x{}, {}", self.pc, rd, rd, imm);
+
+                self.reg[rd as usize] =
+                    (self.reg[rd as usize] as u32).wrapping_add(imm as u32) as i32 as u64;
+            }
+
             (0b01, 0b010) => {
                 // C.LI - Load Immediate
-                let imm = ((inst >> 12) & 0b1) << 6 | ((inst >> 2) & 0b11111);
+                let imm = (((inst & 0b1000000000000) << 3) as i16 >> 10) // imm[5]
+                        | (inst & 0b1111100) as i16 >> 2; // imm[4:0]
+
                 let rd = (inst >> 7) & 0b11111;
 
                 debug!("{:016x} li    x{}, {}", self.pc, rd, imm);
@@ -264,7 +295,6 @@ impl Emulator {
                             | ((inst & 0b100000) << 1) as u64 // imm[6]
                             | ((inst & 0b1000000) >> 2) as u64; // imm[4]
 
-                    // let imm = imm as i64; // adapt to range (-512, 496)
                     self.reg[SP] = self.reg[SP].wrapping_add(imm);
 
                     debug!("{:016x} add   sp, sp, {}", self.pc, imm as i64);
@@ -296,6 +326,16 @@ impl Emulator {
                         debug!("{:016x} srli  x{}, x{}, {}", self.pc, rd, rd, imm);
                         self.reg[rd] = self.reg[rd] >> imm;
                     }
+
+                    // C.ANDI
+                    0b10 => {
+                        let imm = ((inst & 0b1000000000000) << 3) as i16 >> 10 // imm[5]
+                                | (inst & 0b1111100) as i16 >> 2; // imm[4:0]
+
+                        debug!("{:016x} andi  x{}, x{}, {}", self.pc, rd, rd, imm);
+                        self.reg[rd] = self.reg[rd] & imm as u64;
+                    }
+
                     0b11 => {
                         let funct2_2 = (inst >> 5) & 0b11;
                         let imm_bit = (inst >> 12) & 0b1;
@@ -416,11 +456,11 @@ impl Emulator {
             (0b00, 0b000) => {
                 // C.ADDI4SPN
 
-                // nzuimm[5:4|9:6|2|3]
-                let imm = (((inst >> 6) & 0b1) << 2)
-                    | (((inst >> 5) & 0b1) << 3)
-                    | (((inst >> 11) & 0b11) << 4)
-                    | (((inst >> 7) & 0b1111) << 6);
+                // nzuimm
+                let imm = (inst & 0b100000) >> 2 // imm[3]
+                        | (inst & 0b1000000) >> 4 // imm[2]
+                        | (inst & 0b11110000000) >> 1 // imm[9:6]
+                        | (inst & 0b1100000000000) >> 7; // imm[5:4]
 
                 let rd = ((inst >> 2) & 0b111) + 8;
 
@@ -432,6 +472,8 @@ impl Emulator {
                 // C.LW
                 let rd = ((inst >> 2) & 0b111) + 8;
                 let rs1 = ((inst >> 7) & 0b111) + 8;
+
+                // uimm
                 let imm = (inst & 0b100000) << 1 // imm[6]
                         | (inst & 0b1000000) >> 4 // imm[2]
                         | (inst & 0b1110000000000) >> 7; // imm[5:3]
@@ -446,6 +488,8 @@ impl Emulator {
                 // C.LD
                 let rd = ((inst >> 2) & 0b111) + 8;
                 let rs1 = ((inst >> 7) & 0b111) + 8;
+
+                // uimm
                 let imm = ((inst >> 7) & 0b111000) | (((inst >> 5) & 0b111) << 6);
 
                 debug!("{:016x} ld    x{}, {}(x{}) (c.ld)", self.pc, rd, imm, rs1);
@@ -456,6 +500,8 @@ impl Emulator {
 
             (0b00, 0b110) => {
                 // C.SW
+
+                // uimm
                 let imm = (inst & 0b1110000000000) >> 7 // imm[5:3]
                         | (inst & 0b100000) << 1 // imm[6]
                         | (inst & 0b1000000) >> 4; // imm[2]
@@ -472,6 +518,8 @@ impl Emulator {
 
             (0b00, 0b111) => {
                 // C.SD
+
+                // uimm
                 let imm = (inst & 0b1110000000000) >> 7 // imm[5:3]
                         | (inst & 0b1100000) << 1; // imm[7:6]
 
@@ -541,6 +589,11 @@ impl Emulator {
                         unimplemented!("{funct3:b}")
                     }
                 }
+            }
+
+            // FENCE
+            0b0001111 => {
+                // noop
             }
 
             0b0010011 => {
@@ -620,7 +673,8 @@ impl Emulator {
                     }
                     // SB
                     0b000 => {
-                        unimplemented!("SB unimplemented");
+                        debug!("{:016x} sb    x{}, {}(x{})", self.pc, rs2, imm, rs1);
+                        self.memory.store_byte(addr, self.reg[rs2] as u8);
                     }
                     // SH
                     0b001 => {

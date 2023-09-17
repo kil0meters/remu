@@ -223,15 +223,16 @@ impl Memory {
             }
         }
 
-        if idx < self.heap_pointer {
+        let heap_start = self.heap_pointer - self.heap.len() as u64;
+        if idx >= heap_start && idx < self.heap_pointer {
             debug!(
-                "{:x} - ({:x} - {:x})",
+                "store byte: {:x} - ({:x} - {:x})",
                 idx,
                 self.heap_pointer,
                 self.heap.len()
             );
 
-            let heap_idx = idx - (self.heap_pointer - self.heap.len() as u64);
+            let heap_idx = idx - heap_start;
 
             self.heap[heap_idx as usize] = data;
         } else if idx <= STACK_START {
@@ -239,7 +240,11 @@ impl Memory {
 
             // TODO: It's possible that this extends the stack too much. IDK really
             if (stack_idx as usize) >= self.stack.len() {
-                self.stack.resize(stack_idx as usize + 1, 0);
+                if stack_idx as usize - self.stack.len() < 0xffffff {
+                    self.stack.resize(stack_idx as usize + 1, 0);
+                } else {
+                    return;
+                }
             }
 
             self.stack[stack_idx as usize] = data;

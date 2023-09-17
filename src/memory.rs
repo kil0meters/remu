@@ -1,13 +1,12 @@
-use elf::{
-    abi::{PT_GNU_STACK, PT_LOAD},
-    endian::EndianParse,
-    ElfBytes,
-};
+use std::collections::VecDeque;
+
+use elf::{abi::PT_LOAD, endian::EndianParse, ElfBytes};
 use log::{debug, warn};
 
 use crate::STACK_START;
 
-struct MemoryRange {
+#[derive(Debug)]
+pub struct MemoryRange {
     start: u64,
     end: u64,
     data: Box<[u8]>,
@@ -34,8 +33,16 @@ impl MemoryRange {
 }
 
 pub struct Memory {
-    ranges: Vec<MemoryRange>,
+    ranges: Box<[MemoryRange]>,
     pub stack: Vec<u8>,
+    pub heap: Vec<u8>,
+
+    // the address to the end of the heap
+    pub heap_pointer: u64,
+
+    // probably the best data structure is a self balancing binary search tree where node keys are
+    // a range of integers (start and end of memory).
+    pub mmap_regions: VecDeque<MemoryRange>,
 }
 
 impl Memory {
@@ -43,6 +50,7 @@ impl Memory {
         let mut ranges = Vec::new();
 
         let segments = elf.segments().unwrap();
+        let mut data_end = 0;
 
         for segment in segments {
             match segment.p_type {
@@ -64,11 +72,14 @@ impl Memory {
                         segment.p_memsz, segment.p_vaddr, segment.p_type
                     );
 
-                    ranges.push(MemoryRange {
+                    let range = MemoryRange {
                         start: segment.p_vaddr,
                         end: segment.p_vaddr + data.len() as u64,
                         data: data.into(),
-                    });
+                    };
+
+                    data_end = data_end.max(range.end);
+                    ranges.push(range);
                 }
                 _ => {
                     warn!("Unknown p_type: {segment:?}");
@@ -77,8 +88,63 @@ impl Memory {
         }
 
         Memory {
-            ranges,
+            ranges: ranges.into_boxed_slice(),
             stack: Vec::new(),
+            heap: Vec::new(),
+
+            heap_pointer: data_end,
+            mmap_regions: VecDeque::new(),
+        }
+    }
+
+    pub fn brk(&mut self, new_end: u64) -> u64 {
+        // if break point is invalid, we return the current heap pointer
+        if new_end < self.heap_pointer || new_end >= STACK_START - self.stack.len() as u64 {
+            return self.heap_pointer;
+        }
+
+        self.heap.resize(
+            new_end as usize - self.heap_pointer as usize + self.heap.len(),
+            0,
+        );
+
+        self.heap_pointer = new_end;
+
+        return self.heap_pointer;
+    }
+
+    pub fn mmap(&mut self, size: u64) -> u64 {
+        // how do we pick and address? I don't know.
+
+        let mut region_start = 0x2000000000000000u64;
+
+        // put region after previous region
+        let mut max_addr = 0;
+        for region in &self.mmap_regions {
+            max_addr = max_addr.max(region.end);
+        }
+
+        region_start = region_start.max(max_addr);
+
+        let region = MemoryRange {
+            start: region_start,
+            end: region_start + size,
+            data: vec![0; size as usize].into_boxed_slice(),
+        };
+
+        self.mmap_regions.push_back(region);
+
+        region_start
+    }
+
+    pub fn munmap(&mut self, ptr: u64) -> u64 {
+        let index = self.mmap_regions.iter().position(|elm| elm.start == ptr);
+
+        if let Some(index) = index {
+            self.mmap_regions.swap_remove_back(index);
+            return 0;
+        } else {
+            return -1 as i64 as u64;
         }
     }
 
@@ -94,19 +160,30 @@ impl Memory {
             | ((self.load_byte(index + 3) as u32) << 24);
     }
 
+    pub fn load_u16(&mut self, index: u64) -> u16 {
+        return (self.load_byte(index) as u16) //.
+            | ((self.load_byte(index + 1) as u16) << 8);
+    }
+
     /// Has to be mutable because there's a chance loading a byte resizes the stack apparently?
     pub fn load_byte(&mut self, idx: u64) -> u8 {
         // try loading from executable mapped memory ranges
-        for range in &self.ranges {
+        for range in self.ranges.iter() {
+            if range.in_range(idx) {
+                return range.fetch_byte(idx);
+            }
+        }
+
+        // try loading from dynamic mmap regions
+        for range in self.mmap_regions.iter() {
             if range.in_range(idx) {
                 return range.fetch_byte(idx);
             }
         }
 
         // else try to load from stack
-        debug!("{STACK_START:x} - {idx:x}");
+        // debug!("{STACK_START:x} - {idx:x}");
         let stack_idx = STACK_START - idx;
-        // debug!("Attemping to load stack index = {stack_idx}");
         if idx <= STACK_START {
             // TODO: It's possible that this extends the stack too much. IDK really
             if (stack_idx as usize) >= self.stack.len() {
@@ -132,16 +209,34 @@ impl Memory {
     }
 
     pub fn store_byte(&mut self, idx: u64, data: u8) {
-        for range in &mut self.ranges {
+        for range in self.ranges.iter_mut() {
             if range.try_store_byte(idx, data) {
                 return;
             }
         }
 
-        // debug!("{STACK_START:x} - {idx:x}");
-        let stack_idx = STACK_START - idx;
-        // debug!("Attemping to load stack index = {stack_idx}");
-        if idx <= STACK_START {
+        for range in self.mmap_regions.iter_mut() {
+            if range.in_range(idx) {
+                if range.try_store_byte(idx, data) {
+                    return;
+                }
+            }
+        }
+
+        if idx < self.heap_pointer {
+            debug!(
+                "{:x} - ({:x} - {:x})",
+                idx,
+                self.heap_pointer,
+                self.heap.len()
+            );
+
+            let heap_idx = idx - (self.heap_pointer - self.heap.len() as u64);
+
+            self.heap[heap_idx as usize] = data;
+        } else if idx <= STACK_START {
+            let stack_idx = STACK_START - idx;
+
             // TODO: It's possible that this extends the stack too much. IDK really
             if (stack_idx as usize) >= self.stack.len() {
                 self.stack.resize(stack_idx as usize + 1, 0);

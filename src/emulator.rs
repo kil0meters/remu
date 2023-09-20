@@ -220,9 +220,9 @@ impl Emulator {
                 self.reg[rd as usize] = self.reg[rs1 as usize].wrapping_sub(self.reg[rs2 as usize])
             }
             Inst::Subw { rd, rs1, rs2 } => {
-                self.reg[rd as usize] = (self.reg[rs1 as usize] as u32)
-                    .wrapping_sub(self.reg[rs2 as usize] as u32)
-                    as i32 as u64;
+                self.reg[rd as usize] = (self.reg[rs1 as usize] as i32)
+                    .wrapping_sub(self.reg[rs2 as usize] as i32)
+                    as u64;
             }
             Inst::Slli { rd, rs1, shamt } => {
                 self.reg[rd as usize] = self.reg[rs1 as usize] << shamt;
@@ -334,17 +334,33 @@ mod tests {
         assert_eq!(emulator.reg[A1], 0x00000000000000ef);
     }
 
-    // #[test_log::test]
-    // fn stores() {
-    //     let memory = Memory::from_raw(&[
-    //         0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, //.
-    //         0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, //.
-    //     ]);
-    //     let mut emulator = Emulator::new(0, memory);
-    //     emulator.reg[A0] = 0xdebc9a7856342312;
-    //
-    //     // sd
-    // }
+    #[test_log::test]
+    fn stores() {
+        let memory = Memory::from_raw(&[
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, //.
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, //.
+        ]);
+        let mut emulator = Emulator::new(0, memory);
+        emulator.reg[A0] = 0xdebc9a7856342312;
+
+        // sd a0, 0(zero)
+        // ld a1, 0(zero)
+        emulator.execute_raw(0x00a03023);
+        emulator.execute_raw(0x00003583);
+        assert_eq!(emulator.reg[A0], emulator.reg[A1]);
+
+        // -32 2s complement
+        emulator.reg[A0] = 0xfffffffffffffffe;
+        // sw a0, 0(zero)
+        // lw a1, 0(zero)
+        emulator.execute_raw(0x00a02023);
+        emulator.execute_raw(0x00002583);
+        assert_eq!(emulator.reg[A0], emulator.reg[A1]);
+
+        // ld a1, 0(zero)
+        emulator.execute_raw(0x00003583);
+        assert_ne!(emulator.reg[A0], emulator.reg[A1]);
+    }
 
     #[test_log::test]
     fn sp_relative() {

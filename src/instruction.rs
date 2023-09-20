@@ -1,6 +1,7 @@
-use crate::SP;
+use crate::emulator::SP;
 
-enum Instruction {
+#[derive(Debug)]
+pub enum Inst {
     // MISC.
     Fence,
     Ecall,
@@ -32,7 +33,6 @@ enum Instruction {
     Or { rd: u8, rs1: u8, rs2: u8 },
     Xor { rd: u8, rs1: u8, rs2: u8 },
 
-
     // JUMPING
     Auipc { rd: u8, imm: u64 },
     Jal { rd: u8, offset: u64 },
@@ -42,20 +42,24 @@ enum Instruction {
     Beq { rs1: u8, rs2: u8, offset: i32 },
     Bne { rs1: u8, rs2: u8, offset: i32 },
     Blt { rs1: u8, rs2: u8, offset: i32 },
+    Bltu { rs1: u8, rs2: u8, offset: i32 },
     Bge { rs1: u8, rs2: u8, offset: i32 },
     Bgeu { rs1: u8, rs2: u8, offset: i32 },
-    Bltu { rs1: u8, rs2: u8, offset: i32 },
 }
 
-impl Instruction {
-    pub fn decode(inst: u32) -> Instruction {
+impl Inst {
+    // returns the instruction along with the number of bytes read
+    pub fn decode(inst: u32) -> (Inst, u8) {
+        log::debug!("decoding={:08x}", inst);
+
         match inst & 0b11 {
-            0b00 | 0b01 | 0b10 => Self::decode_compressed(inst as u16),
-            0b11 => Self::decode_normal(inst),
+            0b00 | 0b01 | 0b10 => (Self::decode_compressed(inst as u16), 2),
+            0b11 => (Self::decode_normal(inst), 4),
+            _ => unreachable!(),
         }
     }
 
-    fn decode_normal(inst: u32) -> Instruction {
+    fn decode_normal(inst: u32) -> Inst {
         let opcode = inst & 0b1111111;
         let rd = ((inst >> 7) & 0b11111) as u8;
         let rs1 = ((inst >> 15) & 0b11111) as u8;
@@ -67,43 +71,43 @@ impl Instruction {
                 let offset = ((inst & 0xFFF00000) as i32) >> 20;
 
                 match funct3 {
-                    0b010 => Instruction::Lw { rd, rs1, offset },
-                    0b011 => Instruction::Ld { rd, rs1, offset },
-                    0b100 => Instruction::Lbu { rd, rs1, offset },
-                    0b101 => Instruction::Lhu { rd, rs1, offset },
-                    _ => Instruction::Error(format!("unimplemented: {opcode:b} funct3={funct3:b}").into()),
+                    0b010 => Inst::Lw { rd, rs1, offset },
+                    0b011 => Inst::Ld { rd, rs1, offset },
+                    0b100 => Inst::Lbu { rd, rs1, offset },
+                    0b101 => Inst::Lhu { rd, rs1, offset },
+                    _ => Inst::Error(format!("unimplemented: {opcode:b} funct3={funct3:b}").into()),
                 }
             }
-            0b0001111 => Instruction::Fence,
+            0b0001111 => Inst::Fence,
             0b0010011 => {
                 let imm = ((inst & 0xFFF00000) as i32 as i64 >> 20) as u64;
                 match funct3 {
-                    0b000 => Instruction::Addi { rd, rs1, imm },
+                    0b000 => Inst::Addi { rd, rs1, imm },
                     0b001 => {
                         let shamt = ((inst >> 20) & 0b11111) as u64;
-                        Instruction::Slli { rd, rs1, shamt }
+                        Inst::Slli { rd, rs1, shamt }
                     }
-                    0b111 => Instruction::Andi { rd, rs1, imm },
-                    _ => Instruction::Error(format!("unimplemented: {opcode:b} funct3={funct3:b}").into()),
+                    0b111 => Inst::Andi { rd, rs1, imm },
+                    _ => Inst::Error(format!("unimplemented: {opcode:b} funct3={funct3:b}").into()),
                 }
             }
 
             // AUIPC - Add Upper Immediate to PC
             0b0010111 => {
                 let imm = (inst & 0xFFFFF000) as i32 as i64 as u64;
-                Instruction::Auipc { rd, imm }
+                Inst::Auipc { rd, imm }
             }
 
             0b0011011 => match funct3 {
                 0b000 => {
                     let imm = ((inst & 0b11111111111100000000000000000000) as i32 >> 20) as u32;
-                    Instruction::Addiw { rd, rs1, imm }
+                    Inst::Addiw { rd, rs1, imm }
                 }
                 0b001 => {
                     let shamt = ((inst >> 20) & 0b111111) as u32;
-                    Instruction::Slliw { rd, rs1, shamt }
+                    Inst::Slliw { rd, rs1, shamt }
                 }
-                _ => Instruction::Error(format!("unimplemented: {opcode:b} funct3={funct3:b}").into()),
+                _ => Inst::Error(format!("unimplemented: {opcode:b} funct3={funct3:b}").into()),
             },
 
             // STORE
@@ -112,15 +116,15 @@ impl Instruction {
                            | (inst & 0b111110000000) as i32 >> 7; // imm[4:0]
 
                 match funct3 {
-                    0b011 => Instruction::Sd { rs1, rs2, offset }
-                    0b010 => Instruction::Sw { rs1, rs2, offset },
-                    0b001 => Instruction::Sh { rs1, rs2, offset },
-                    0b000 => Instruction::Sb { rs1, rs2, offset },
-                    _ => Instruction::Error(format!("unimplemented: {opcode:b} funct3={funct3:b}").into()),
+                    0b011 => Inst::Sd { rs1, rs2, offset },
+                    0b010 => Inst::Sw { rs1, rs2, offset },
+                    0b001 => Inst::Sh { rs1, rs2, offset },
+                    0b000 => Inst::Sb { rs1, rs2, offset },
+                    _ => Inst::Error(format!("unimplemented: {opcode:b} funct3={funct3:b}").into()),
                 }
             }
 
-            0b0110011 => Instruction::Add { rd, rs1, rs2 },
+            0b0110011 => Inst::Add { rd, rs1, rs2 },
 
             // Branches
             0b1100011 => {
@@ -130,13 +134,13 @@ impl Instruction {
                            | ((inst & 0b111100000000) >> 7) as i32; // imm[4:1]
 
                 match funct3 {
-                    0b000 => Instruction::Beq { rs1, rs2, offset },
-                    0b001 => Instruction::Bne { rs1, rs2, offset },
-                    0b100 => Instruction::Blt { rs1, rs2, offset },
-                    0b101 => Instruction::Bge { rs1, rs2, offset },
-                    0b110 => Instruction::Bltu { rs1, rs2, offset },
-                    0b111 => Instruction::Bgeu { rs1, rs2, offset },
-                    _ => Instruction::Error(format!("unimplemented: {opcode:b} funct3={funct3:b}").into()),
+                    0b000 => Inst::Beq { rs1, rs2, offset },
+                    0b001 => Inst::Bne { rs1, rs2, offset },
+                    0b100 => Inst::Blt { rs1, rs2, offset },
+                    0b101 => Inst::Bge { rs1, rs2, offset },
+                    0b110 => Inst::Bltu { rs1, rs2, offset },
+                    0b111 => Inst::Bgeu { rs1, rs2, offset },
+                    _ => Inst::Error(format!("unimplemented: {opcode:b} funct3={funct3:b}").into()),
                 }
             }
 
@@ -147,16 +151,16 @@ impl Instruction {
                            | ((inst >> 9) & 0x800) as u64 // imm[11]
                            | ((inst >> 20) & 0x7fe) as u64; // imm[10:1]
 
-                Instruction::Jal { rd, offset }
+                Inst::Jal { rd, offset }
             }
 
-            0b1110011 => Instruction::Ecall,
+            0b1110011 => Inst::Ecall,
 
-            _ => Instruction::Error(format!("unimplemented: {opcode:b}").into()),
+            _ => Inst::Error(format!("unimplemented: {opcode:b}").into()),
         }
     }
 
-    fn decode_compressed(inst: u16) -> Instruction {
+    fn decode_compressed(inst: u16) -> Inst {
         let quadrant = inst & 0b11;
         let funct3 = (inst >> 13) & 0b111;
 
@@ -173,7 +177,11 @@ impl Instruction {
                                 | (inst & 0b1100000000000) >> 7; // imm[5:4]
                         let rd = (((inst >> 2) & 0b111) + 8) as u8;
 
-                        Instruction::Addi { rd, rs1: SP as u8, imm: imm as u64 }
+                        Inst::Addi {
+                            rd,
+                            rs1: SP as u8,
+                            imm: imm as u64,
+                        }
                     }
                     0b010 => {
                         // C.LW
@@ -183,7 +191,11 @@ impl Instruction {
                                    | (inst & 0b1000000) >> 4 // imm[2]
                                    | (inst & 0b1110000000000) >> 7; // imm[5:3]
 
-                        Instruction::Lw { rd, rs1, offset: offset as i32 }
+                        Inst::Lw {
+                            rd,
+                            rs1,
+                            offset: offset as i32,
+                        }
                     }
                     0b011 => {
                         // C.LD
@@ -191,7 +203,11 @@ impl Instruction {
                         let rs1 = (((inst >> 7) & 0b111) + 8) as u8;
                         let offset = ((inst >> 7) & 0b111000) | (((inst >> 5) & 0b111) << 6);
 
-                        Instruction::Ld { rd, rs1, offset: offset as i32 }
+                        Inst::Ld {
+                            rd,
+                            rs1,
+                            offset: offset as i32,
+                        }
                     }
                     0b110 => {
                         // C.SW
@@ -201,7 +217,11 @@ impl Instruction {
                                 | (inst & 0b100000) << 1 // imm[6]
                                 | (inst & 0b1000000) >> 4; // imm[2]
 
-                        Instruction::Sw { rs1, rs2, offset: imm as i32 }
+                        Inst::Sw {
+                            rs1,
+                            rs2,
+                            offset: imm as i32,
+                        }
                     }
                     0b111 => {
                         // C.SD
@@ -210,9 +230,15 @@ impl Instruction {
                         let imm = (inst & 0b1110000000000) >> 7 // imm[5:3]
                                 | (inst & 0b1100000) << 1; // imm[7:6]
 
-                        Instruction::Sd { rs1, rs2, offset: imm as i32 }
+                        Inst::Sd {
+                            rs1,
+                            rs2,
+                            offset: imm as i32,
+                        }
                     }
-                    _ => Instruction::Error(format!("unimplemented: quadrant={quadrant:02b} {funct3:03b}").into()),
+                    _ => Inst::Error(
+                        format!("unimplemented: quadrant={quadrant:02b} {funct3:03b}").into(),
+                    ),
                 }
             }
             0b01 => {
@@ -222,21 +248,33 @@ impl Instruction {
                                 | (inst & 0b1111100) as i16 >> 2; // imm[4:0]
                         let rd = ((inst >> 7) & 0b11111) as u8;
 
-                        Instruction::Addi { rd, rs1: rd, imm: imm as u64 }
+                        Inst::Addi {
+                            rd,
+                            rs1: rd,
+                            imm: imm as u64,
+                        }
                     }
                     0b001 => {
                         let imm = (((inst & 0b1000000000000) << 3) as i16 >> 10) // imm[5]
                                 | (inst & 0b1111100) as i16 >> 2; // imm[4:0]
                         let rd = ((inst >> 7) & 0b11111) as u8;
 
-                        Instruction::Addiw { rd, rs1: rd, imm: imm as u32 }
+                        Inst::Addiw {
+                            rd,
+                            rs1: rd,
+                            imm: imm as u32,
+                        }
                     }
                     0b010 => {
                         let imm = (((inst & 0b1000000000000) << 3) as i16 >> 10) // imm[5]
                                 | (inst & 0b1111100) as i16 >> 2; // imm[4:0]
                         let rd = ((inst >> 7) & 0b11111) as u8;
 
-                        Instruction::Addi { rd, rs1: 0, imm: imm as u64 }
+                        Inst::Addi {
+                            rd,
+                            rs1: 0,
+                            imm: imm as u64,
+                        }
                     }
                     0b011 => {
                         let rd = ((inst >> 7) & 0b11111) as u8;
@@ -249,13 +287,20 @@ impl Instruction {
                                     | ((inst & 0b100000) << 1) as u64 // imm[6]
                                     | ((inst & 0b1000000) >> 2) as u64; // imm[4]
 
-                            Instruction::Addi { rd: SP as u8, rs1: SP as u8, imm }
+                            Inst::Addi {
+                                rd: SP as u8,
+                                rs1: SP as u8,
+                                imm,
+                            }
                         } else {
                             // C.LUI
                             let imm = ((((inst & 0b1000000000000) << 3) as i16 as i32) << 2)  // imm[17]
                                     | ((inst as u32 & 0b1111100) << 10) as i32; // imm[16:12]
 
-                            Instruction::Lui { rd, imm: imm as u32 }
+                            Inst::Lui {
+                                rd,
+                                imm: imm as u32,
+                            }
                         }
                     }
                     0b100 => {
@@ -272,7 +317,11 @@ impl Instruction {
                                     panic!("Immediate must be nonzero");
                                 }
 
-                                Instruction::Srli { rd, rs1: rd, shamt: shamt as u64 }
+                                Inst::Srli {
+                                    rd,
+                                    rs1: rd,
+                                    shamt: shamt as u64,
+                                }
                             }
 
                             // C.ANDI
@@ -280,7 +329,11 @@ impl Instruction {
                                 let imm = ((inst & 0b1000000000000) << 3) as i16 >> 10 // imm[5]
                                         | (inst & 0b1111100) as i16 >> 2; // imm[4:0]
 
-                                Instruction::Andi { rd, rs1: rd, imm: imm as u64 }
+                                Inst::Andi {
+                                    rd,
+                                    rs1: rd,
+                                    imm: imm as u64,
+                                }
                             }
 
                             0b11 => {
@@ -288,19 +341,21 @@ impl Instruction {
                                 let rs2 = (((inst >> 2) & 0b111) + 8) as u8;
 
                                 match funct3 {
-                                    0b000 => Instruction::Sub { rd, rs1: rd, rs2 }
-                                    0b001 => Instruction::Xor { rd, rs1: rd, rs2 },
-                                    0b010 => Instruction::Or { rd, rs1: rd, rs2 },
-                                    0b011 => Instruction::And { rd, rs1: rd, rs2 },
-                                    0b100 => Instruction::Subw { rd, rs1: rd, rs2 },
-                                    0b101 => Instruction::Addw { rd, rs1: rd, rs2 },
+                                    0b000 => Inst::Sub { rd, rs1: rd, rs2 },
+                                    0b001 => Inst::Xor { rd, rs1: rd, rs2 },
+                                    0b010 => Inst::Or { rd, rs1: rd, rs2 },
+                                    0b011 => Inst::And { rd, rs1: rd, rs2 },
+                                    0b100 => Inst::Subw { rd, rs1: rd, rs2 },
+                                    0b101 => Inst::Addw { rd, rs1: rd, rs2 },
 
                                     _ => {
                                         unreachable!();
                                     }
                                 }
                             }
-                            _ => Instruction::Error(format!("unimplemented instruction: {inst:0b} {funct2:0b}").into())
+                            _ => Inst::Error(
+                                format!("unimplemented instruction: {inst:0b} {funct2:0b}").into(),
+                            ),
                         }
                     }
                     0b101 => {
@@ -313,7 +368,10 @@ impl Instruction {
                                 | (inst & 0b100000000000) >> 7 // imm[4]
                                 | (((inst & 0b1000000000000) << 3) as i16 >> 4) as u16; // imm[11]
 
-                        Instruction::Jal { rd: 0, offset: imm as i16 as u64 }
+                        Inst::Jal {
+                            rd: 0,
+                            offset: imm as i16 as u64,
+                        }
                     }
                     0b110 => {
                         // C.BEQZ
@@ -325,7 +383,11 @@ impl Instruction {
 
                         let rs1 = (((inst >> 7) & 0b111) + 8) as u8;
 
-                        Instruction::Beq { rs1, rs2: 0, offset }
+                        Inst::Beq {
+                            rs1,
+                            rs2: 0,
+                            offset,
+                        }
                     }
                     0b111 => {
                         // C.BNEZ
@@ -337,9 +399,15 @@ impl Instruction {
 
                         let rs1 = (((inst >> 7) & 0b111) + 8) as u8;
 
-                        Instruction::Bne { rs1, rs2: 0, offset }
+                        Inst::Bne {
+                            rs1,
+                            rs2: 0,
+                            offset,
+                        }
                     }
-                    _ => Instruction::Error(format!("unimplemented: quadrant={quadrant:02b} {funct3:03b}").into()),
+                    _ => Inst::Error(
+                        format!("unimplemented: quadrant={quadrant:02b} {funct3:03b}").into(),
+                    ),
                 }
             }
             0b10 => {
@@ -347,7 +415,7 @@ impl Instruction {
                     0b000 => {
                         let shamt = ((((inst >> 12) & 0b1) << 5) | ((inst >> 2) & 0b1111)) as u64;
                         let rd = ((inst >> 7) & 0b11111) as u8;
-                        Instruction::Slli { rd, rs1: rd, shamt }
+                        Inst::Slli { rd, rs1: rd, shamt }
                     }
                     0b011 => {
                         let rd = ((inst >> 7) & 0b11111) as u8;
@@ -357,7 +425,11 @@ impl Instruction {
 
                         if rd != 0 {
                             // C.LDSP
-                            Instruction::Ld { rd, rs1: SP as u8, offset: imm as i32 }
+                            Inst::Ld {
+                                rd,
+                                rs1: SP as u8,
+                                offset: imm as i32,
+                            }
                         } else {
                             panic!("C.FLWSP not implemented");
                         }
@@ -369,30 +441,46 @@ impl Instruction {
 
                         // C.JR - ret
                         if imm == 0 && rs1 != 0 && rs2 == 0 {
-                            Instruction::Jalr { rd: 0, rs1, offset: 0 }
+                            Inst::Jalr {
+                                rd: 0,
+                                rs1,
+                                offset: 0,
+                            }
                         }
                         // C.MV - Move
                         else if imm == 0 && rs1 != 0 && rs2 != 0 {
-                            Instruction::Add { rd: rs1, rs1: 0, rs2 }
+                            Inst::Add {
+                                rd: rs1,
+                                rs1: 0,
+                                rs2,
+                            }
                         }
                         // C.ADD - Add
                         else if imm == 1 && rs1 != 0 && rs2 != 0 {
-                            Instruction::Add { rd: rs1, rs1, rs2 }
+                            Inst::Add { rd: rs1, rs1, rs2 }
                         } else {
-                            Instruction::Error(format!("compressed instruction `{inst:016b}` not implemented.").into())
+                            Inst::Error(
+                                format!("compressed instruction `{inst:016b}` not implemented.")
+                                    .into(),
+                            )
                         }
                     }
                     0b111 => {
                         // C.SDSP - not C.SWSP since we are emulating RV64C
-                        let offset = (((inst >> 7) & 0b111000) | ((inst >> 1) & 0b111000000)) as i32;
-                        let rs1 = ((inst >> 2) & 0b11111) as u8;
+                        let offset =
+                            (((inst >> 7) & 0b111000) | ((inst >> 1) & 0b111000000)) as i32;
+                        let rs2 = ((inst >> 2) & 0b11111) as u8;
 
-                        Instruction::Sd { rs1, rs2: SP as u8, offset }
+                        Inst::Sd {
+                            rs1: SP as u8,
+                            rs2,
+                            offset,
+                        }
                     }
-                    _ => Instruction::Error(format!("quadrant={quadrant:02b} funct3={funct3:03b}").into())
+                    _ => Inst::Error(format!("quadrant={quadrant:02b} funct3={funct3:03b}").into()),
                 }
             }
-            0b11 => Instruction::Error("Quadrant 11 should not exist".into())
+            0b11 => Inst::Error("Quadrant 11 should not exist".into()),
             _ => unreachable!(),
         }
     }

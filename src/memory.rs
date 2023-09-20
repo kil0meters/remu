@@ -3,7 +3,7 @@ use std::collections::VecDeque;
 use elf::{abi::PT_LOAD, endian::EndianParse, ElfBytes};
 use log::{debug, warn};
 
-use crate::STACK_START;
+use crate::emulator::STACK_START;
 
 #[derive(Debug)]
 pub struct MemoryRange {
@@ -202,13 +202,18 @@ impl Memory {
     }
 
     pub fn store_u32(&mut self, index: u64, data: u32) {
-        self.store_byte(index + 3, (data >> 24) as u8);
-        self.store_byte(index + 2, (data >> 16) as u8);
-        self.store_byte(index + 1, (data >> 8) as u8);
-        self.store_byte(index + 0, (data) as u8);
+        self.store_u8(index + 3, (data >> 24) as u8);
+        self.store_u8(index + 2, (data >> 16) as u8);
+        self.store_u8(index + 1, (data >> 8) as u8);
+        self.store_u8(index + 0, (data) as u8);
     }
 
-    pub fn store_byte(&mut self, idx: u64, data: u8) {
+    pub fn store_u16(&mut self, index: u64, data: u16) {
+        self.store_u8(index + 1, (data >> 8) as u8);
+        self.store_u8(index + 0, (data) as u8);
+    }
+
+    pub fn store_u8(&mut self, idx: u64, data: u8) {
         for range in self.ranges.iter_mut() {
             if range.try_store_byte(idx, data) {
                 return;

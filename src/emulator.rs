@@ -99,11 +99,14 @@ impl Emulator {
         self.print_registers();
         self.execute(inst, incr as u64);
 
-        // let mut res = String::new();
-        // std::io::stdin().read_line(&mut res).unwrap();
-
         self.fuel_counter += 1;
         self.exit_code
+    }
+
+    fn execute_raw(&mut self, inst_data: u32) {
+        let (inst, incr) = Inst::decode(inst_data);
+        self.execute(inst, incr as u64);
+        self.print_registers();
     }
 
     pub fn print_registers(&self) {
@@ -285,5 +288,41 @@ impl Emulator {
 
         // make sure x0 is zero
         self.reg[0] = 0;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test_log::test]
+    fn lui() {
+        let memory = Memory::from_raw(&[]);
+        let mut emulator = Emulator::new(0, memory);
+
+        // lui a0, 1000
+        emulator.execute_raw(0x003e8537);
+        assert_eq!(emulator.reg[A0], 4096000);
+
+        // c.lui a0, 10
+        emulator.execute_raw(0x000065a9);
+        assert_eq!(emulator.reg[A1], 40960);
+    }
+
+    #[test_log::test]
+    fn loads() {
+        let memory = Memory::from_raw(&[
+            0x12, 0x23, 0x34, 0x56, 0x78, 0x9a, 0xbc, 0xde, //.
+            0xef, 0xff, 0xff, 0xff, 0x00, 0x00, 0x00, 0x00, //.
+        ]);
+        let mut emulator = Emulator::new(0, memory);
+
+        // ld a0, 0(x0)
+        emulator.execute_raw(0x00003503);
+        assert_eq!(emulator.reg[A0], 0xdebc9a7856342312);
+
+        // lw a1, 4(zero)
+        emulator.execute_raw(0x00802583);
+        assert_eq!(emulator.reg[A1], 0xffffffffffffffef);
     }
 }

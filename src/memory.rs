@@ -97,6 +97,22 @@ impl Memory {
         }
     }
 
+    pub fn from_raw(data: &[u8]) -> Self {
+        let data = MemoryRange {
+            start: 0,
+            end: data.len() as u64,
+            data: data.into(),
+        };
+        let data_end = data.end;
+        Memory {
+            ranges: [data].into(),
+            stack: Vec::new(),
+            heap: Vec::new(),
+            heap_pointer: data_end,
+            mmap_regions: VecDeque::new(),
+        }
+    }
+
     pub fn brk(&mut self, new_end: u64) -> u64 {
         // if break point is invalid, we return the current heap pointer
         if new_end < self.heap_pointer || new_end >= STACK_START - self.stack.len() as u64 {
@@ -153,7 +169,7 @@ impl Memory {
     }
 
     pub fn load_u32(&mut self, index: u64) -> u32 {
-        // let index = self.pc;
+        log::info!("Loading at {index}");
         return (self.load_byte(index) as u32)
             | ((self.load_byte(index + 1) as u32) << 8)
             | ((self.load_byte(index + 2) as u32) << 16)

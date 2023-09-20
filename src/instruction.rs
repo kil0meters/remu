@@ -125,6 +125,11 @@ impl Inst {
             }
 
             0b0110011 => Inst::Add { rd, rs1, rs2 },
+            0b0110111 => {
+                let imm = inst & 0xFFFFF000;
+
+                Inst::Lui { rd, imm }
+            }
 
             // Branches
             0b1100011 => {
@@ -156,7 +161,7 @@ impl Inst {
 
             0b1110011 => Inst::Ecall,
 
-            _ => Inst::Error(format!("unimplemented: {opcode:b}").into()),
+            _ => Inst::Error(format!("unimplemented: {opcode:07b}").into()),
         }
     }
 
@@ -237,7 +242,8 @@ impl Inst {
                         }
                     }
                     _ => Inst::Error(
-                        format!("unimplemented: quadrant={quadrant:02b} {funct3:03b}").into(),
+                        format!("unimplemented: quadrant={quadrant:02b} {funct3:03b} {inst:x}")
+                            .into(),
                     ),
                 }
             }

@@ -173,11 +173,11 @@ impl Emulator {
             }
             Inst::Lhu { rd, rs1, offset } => {
                 let addr = self.reg[rs1 as usize].wrapping_add(offset as u64);
-                self.reg[rd as usize] = self.memory.load_u16(addr) as i16 as u64;
+                self.reg[rd as usize] = self.memory.load_u16(addr) as u64;
             }
             Inst::Lbu { rd, rs1, offset } => {
                 let addr = self.reg[rs1 as usize].wrapping_add(offset as u64);
-                self.reg[rd as usize] = self.memory.load_u16(addr) as i32 as u64;
+                self.reg[rd as usize] = self.memory.load_u8(addr) as u64;
             }
             Inst::Sd { rs1, rs2, offset } => {
                 let addr = self.reg[rs1 as usize].wrapping_add(offset as u64);
@@ -321,8 +321,55 @@ mod tests {
         emulator.execute_raw(0x00003503);
         assert_eq!(emulator.reg[A0], 0xdebc9a7856342312);
 
-        // lw a1, 4(zero)
+        // lw a1, 8(zero)
         emulator.execute_raw(0x00802583);
         assert_eq!(emulator.reg[A1], 0xffffffffffffffef);
+
+        // lhu a1, 8(zero)
+        emulator.execute_raw(0x00805583);
+        assert_eq!(emulator.reg[A1], 0x000000000000ffef);
+
+        // lhu a1, 8(zero)
+        emulator.execute_raw(0x00804583);
+        assert_eq!(emulator.reg[A1], 0x00000000000000ef);
+    }
+
+    // #[test_log::test]
+    // fn stores() {
+    //     let memory = Memory::from_raw(&[
+    //         0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, //.
+    //         0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, //.
+    //     ]);
+    //     let mut emulator = Emulator::new(0, memory);
+    //     emulator.reg[A0] = 0xdebc9a7856342312;
+    //
+    //     // sd
+    // }
+
+    #[test_log::test]
+    fn sp_relative() {
+        let memory = Memory::from_raw(&[]);
+        let mut emulator = Emulator::new(0, memory);
+        emulator.reg[A0] = 0xdebc9a7856342312;
+        let sp_start = emulator.reg[SP];
+
+        // C.SDSP a0, 0
+        emulator.execute_raw(0x0000e02a);
+
+        // C.LDSP a1, 0
+        emulator.execute_raw(0x00006582);
+        assert_eq!(emulator.reg[A0], emulator.reg[A1]);
+
+        // C.ADDI4SPN a0, 8
+        emulator.execute_raw(0x00000028);
+        assert_eq!(emulator.reg[A0], emulator.reg[SP] + 8);
+
+        // C.ADDI16SP 32
+        emulator.execute_raw(0x00006105);
+        assert_eq!(emulator.reg[SP], sp_start + 32);
+
+        // C.ADDI16SP -64
+        emulator.execute_raw(0x00007139);
+        assert_eq!(emulator.reg[SP], sp_start - 32);
     }
 }

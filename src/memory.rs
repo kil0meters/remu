@@ -169,20 +169,19 @@ impl Memory {
     }
 
     pub fn load_u32(&mut self, index: u64) -> u32 {
-        log::info!("Loading at {index}");
-        return (self.load_byte(index) as u32)
-            | ((self.load_byte(index + 1) as u32) << 8)
-            | ((self.load_byte(index + 2) as u32) << 16)
-            | ((self.load_byte(index + 3) as u32) << 24);
+        return (self.load_u8(index) as u32)
+            | ((self.load_u8(index + 1) as u32) << 8)
+            | ((self.load_u8(index + 2) as u32) << 16)
+            | ((self.load_u8(index + 3) as u32) << 24);
     }
 
     pub fn load_u16(&mut self, index: u64) -> u16 {
-        return (self.load_byte(index) as u16) //.
-            | ((self.load_byte(index + 1) as u16) << 8);
+        return (self.load_u8(index) as u16) //.
+            | ((self.load_u8(index + 1) as u16) << 8);
     }
 
     /// Has to be mutable because there's a chance loading a byte resizes the stack apparently?
-    pub fn load_byte(&mut self, idx: u64) -> u8 {
+    pub fn load_u8(&mut self, idx: u64) -> u8 {
         // try loading from executable mapped memory ranges
         for range in self.ranges.iter() {
             if range.in_range(idx) {

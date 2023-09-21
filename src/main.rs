@@ -9,6 +9,7 @@ use memory::Memory;
 mod emulator;
 mod instruction;
 mod memory;
+mod syscalls;
 
 #[derive(Parser)]
 struct Arguments {
@@ -22,6 +23,8 @@ fn main() -> Result<()> {
     let args = Arguments::parse();
 
     env_logger::Builder::new()
+        .format_timestamp(None)
+        .target(env_logger::Target::Stdout)
         .filter_level(args.verbose.log_level_filter())
         .init();
 

@@ -192,13 +192,6 @@ impl Memory {
 
         let heap_start = self.heap_pointer - self.heap.len() as u64;
         if idx >= heap_start && idx < self.heap_pointer {
-            debug!(
-                "store byte: {:x} - ({:x} - {:x})",
-                idx,
-                self.heap_pointer,
-                self.heap.len()
-            );
-
             let heap_idx = idx - heap_start;
 
             self.heap[heap_idx as usize]
@@ -212,7 +205,8 @@ impl Memory {
                 }
             }
 
-            self.stack[stack_idx as usize]
+            // lol
+            self.stack.get(stack_idx as usize).copied().unwrap_or(0)
         } else {
             panic!("Attempted to store to address not mapped to memoery: {idx:x}");
         }
@@ -252,12 +246,12 @@ impl Memory {
 
         let heap_start = self.heap_pointer - self.heap.len() as u64;
         if idx >= heap_start && idx < self.heap_pointer {
-            debug!(
-                "store byte: {:x} - ({:x} - {:x})",
-                idx,
-                self.heap_pointer,
-                self.heap.len()
-            );
+            // debug!(
+            //     "store byte: {:x} - ({:x} - {:x})",
+            //     idx,
+            //     self.heap_pointer,
+            //     self.heap.len()
+            // );
 
             let heap_idx = idx - heap_start;
 

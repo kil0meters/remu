@@ -3,7 +3,14 @@ use std::{
     ops::{Index, IndexMut},
 };
 
-use crate::{instruction::Inst, memory::Memory};
+use crate::{
+    instruction::Inst,
+    memory::Memory,
+    syscalls::{
+        self, BRK, EXIT, EXIT_GROUP, FACCESSAT, MMAP, PRLIMIT64, READLINKAT, SET_ROBUST_LIST,
+        SET_TID_ADDRESS,
+    },
+};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub struct Reg(pub u8);
@@ -24,7 +31,7 @@ impl<T> IndexMut<Reg> for [T] {
 impl Display for Reg {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let s = match self.0 {
-            0 => "zero",
+            0 => "x0",
             1 => "ra",
             2 => "sp",
             3 => "gp",
@@ -59,9 +66,7 @@ impl Display for Reg {
             _ => unreachable!(),
         };
 
-        write!(f, "{s}");
-
-        Ok(())
+        write!(f, "{s}")
     }
 }
 
@@ -113,42 +118,43 @@ impl Emulator {
         let arg = self.x[A0];
 
         match id {
-            // FACCESSAT
-            48 => {
+            FACCESSAT => {
                 self.x[A0] = 0;
                 // TODO: currently just noop (maybe that's fine, who knows)
             }
 
-            // EXIT
-            93 => {
-                self.exit_code = Some(arg);
-            }
-
-            // EXIT_GROUP
-            94 => {
-                self.exit_code = Some(arg);
-            }
-
-            // SET_TID_ADDRESS
-            96 => {
+            READLINKAT => {
                 // noop
             }
 
-            // SET_ROBUST_LIST
-            99 => {
+            EXIT => {
+                self.exit_code = Some(arg);
+            }
+
+            EXIT_GROUP => {
+                self.exit_code = Some(arg);
+            }
+
+            SET_TID_ADDRESS => {
                 // noop
             }
 
-            // BRK - man 2 brk
-            214 => {
+            SET_ROBUST_LIST => {
+                // noop
+            }
+
+            BRK => {
+                println!("brk_addr_before={:x}", self.memory.heap_pointer);
                 self.x[A0] = self.memory.brk(arg);
+                println!("brk_addr_after={:x}", self.memory.heap_pointer);
             }
 
-            // NMAP - man 2 mmap
-            // A0 - Page address, 0 if let os decide. Ignored.
-            // A1 - Allocated buffer size
-            222 => {
+            MMAP => {
                 self.x[A0] = self.memory.mmap(self.x[A1]);
+            }
+
+            PRLIMIT64 => {
+                // noop
             }
 
             _ => {
@@ -161,13 +167,13 @@ impl Emulator {
         let inst_data = self.memory.load_u32(self.pc);
         let (inst, incr) = Inst::decode(inst_data);
 
-        // if self.pc >= 0x23c74 && self.pc <= 0x23d00 { // _dl_aux_init
-        if self.pc >= 0x23d02 && self.pc <= 0x24390 {
-            let mut s = String::new();
-            std::io::stdin().read_line(&mut s).ok();
-        }
+        // // if self.pc >= 0x23c74 && self.pc <= 0x23d00 { // _dl_aux_init
+        // if self.pc >= 0x23d02 && self.pc <= 0x24390 {
+        //     let mut s = String::new();
+        //     std::io::stdin().read_line(&mut s).ok();
+        // }
 
-        self.print_registers();
+        // self.print_registers();
         self.execute(inst, incr as u64);
 
         self.fuel_counter += 1;

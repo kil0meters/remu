@@ -43,6 +43,7 @@ fn main() -> Result<()> {
 
     let file_entry = file.ehdr.e_entry;
     let memory = Memory::load_elf(file);
+
     let mut emulator = Emulator::new(file_entry, memory);
 
     loop {

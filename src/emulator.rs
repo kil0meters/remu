@@ -1,20 +1,85 @@
+use std::{
+    fmt::Display,
+    ops::{Index, IndexMut},
+};
+
 use crate::{instruction::Inst, memory::Memory};
 
-pub const SP: usize = 2;
-pub const A0: usize = 10;
-pub const A1: usize = 11;
-pub const A2: usize = 12;
-pub const A3: usize = 13;
-pub const A4: usize = 14;
-pub const A5: usize = 15;
-pub const A6: usize = 16;
-pub const A7: usize = 17;
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub struct Reg(pub u8);
+
+impl<T> Index<Reg> for [T] {
+    type Output = T;
+    fn index(&self, index: Reg) -> &Self::Output {
+        &self[index.0 as usize]
+    }
+}
+
+impl<T> IndexMut<Reg> for [T] {
+    fn index_mut(&mut self, index: Reg) -> &mut Self::Output {
+        &mut self[index.0 as usize]
+    }
+}
+
+impl Display for Reg {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let s = match self.0 {
+            0 => "zero",
+            1 => "ra",
+            2 => "sp",
+            3 => "gp",
+            4 => "tp",
+            5 => "t0",
+            6 => "t1",
+            7 => "t2",
+            8 => "s0",
+            9 => "s1",
+            10 => "a0",
+            11 => "a1",
+            12 => "a2",
+            13 => "a3",
+            14 => "a4",
+            15 => "a5",
+            16 => "a6",
+            17 => "a7",
+            18 => "s2",
+            19 => "s3",
+            20 => "s4",
+            21 => "s5",
+            22 => "s6",
+            23 => "s7",
+            24 => "s8",
+            25 => "s9",
+            26 => "s10",
+            27 => "s11",
+            28 => "t3",
+            29 => "t4",
+            30 => "t5",
+            31 => "t6",
+            _ => unreachable!(),
+        };
+
+        write!(f, "{s}");
+
+        Ok(())
+    }
+}
+
+pub const SP: Reg = Reg(2);
+pub const A0: Reg = Reg(10);
+pub const A1: Reg = Reg(11);
+pub const A2: Reg = Reg(12);
+pub const A3: Reg = Reg(13);
+pub const A4: Reg = Reg(14);
+pub const A5: Reg = Reg(15);
+pub const A6: Reg = Reg(16);
+pub const A7: Reg = Reg(17);
 
 pub const STACK_START: u64 = 0x8000000000000000;
 
 pub struct Emulator {
     pc: u64,
-    reg: [u64; 32],
+    x: [u64; 32],
     memory: Memory,
 
     exit_code: Option<u64>,
@@ -29,7 +94,7 @@ impl Emulator {
     pub fn new(entry: u64, memory: Memory) -> Self {
         let mut em = Self {
             pc: entry,
-            reg: [0; 32],
+            x: [0; 32],
             memory,
             exit_code: None,
             fuel_counter: 0,
@@ -38,19 +103,19 @@ impl Emulator {
 
         // STACK_START is actually inaccurate since it's actually the start of the kernel space memory.
         // So we subtract 8 to get the actual first valid memory address.
-        em.reg[SP] = STACK_START - 256;
+        em.x[SP] = STACK_START - 256;
 
         em
     }
 
     // emulates linux syscalls
     fn syscall(&mut self, id: u64) {
-        let arg = self.reg[A0];
+        let arg = self.x[A0];
 
         match id {
             // FACCESSAT
             48 => {
-                self.reg[A0] = 0;
+                self.x[A0] = 0;
                 // TODO: currently just noop (maybe that's fine, who knows)
             }
 
@@ -76,14 +141,14 @@ impl Emulator {
 
             // BRK - man 2 brk
             214 => {
-                self.reg[A0] = self.memory.brk(arg);
+                self.x[A0] = self.memory.brk(arg);
             }
 
             // NMAP - man 2 mmap
             // A0 - Page address, 0 if let os decide. Ignored.
             // A1 - Allocated buffer size
             222 => {
-                self.reg[A0] = self.memory.mmap(self.reg[A1]);
+                self.x[A0] = self.memory.mmap(self.x[A1]);
             }
 
             _ => {
@@ -95,6 +160,12 @@ impl Emulator {
     pub fn fetch_and_execute(&mut self) -> Option<u64> {
         let inst_data = self.memory.load_u32(self.pc);
         let (inst, incr) = Inst::decode(inst_data);
+
+        // if self.pc >= 0x23c74 && self.pc <= 0x23d00 { // _dl_aux_init
+        if self.pc >= 0x23d02 && self.pc <= 0x24390 {
+            let mut s = String::new();
+            std::io::stdin().read_line(&mut s).ok();
+        }
 
         self.print_registers();
         self.execute(inst, incr as u64);
@@ -114,171 +185,130 @@ impl Emulator {
         println!("heap_end: {:x?}", self.memory.heap_pointer);
         println!("dynamic data: {:x?}", self.memory.mmap_regions);
         println!("fuel consumed: {}", self.fuel_counter);
-        println!("x0 (zero):  {:x}", self.reg[0]);
-        println!("x1 (ra):    {:x}", self.reg[1]);
-        println!("x2 (sp):    {:x}", self.reg[2]);
-        println!("x3 (gp):    {:x}", self.reg[3]);
-        println!("x4 (tp):    {:x}", self.reg[4]);
-        println!("x5 (t0):    {:x}", self.reg[5]);
-        println!("x6 (t1):    {:x}", self.reg[6]);
-        println!("x7 (t2):    {:x}", self.reg[7]);
-        println!("x8 (s0/fp): {:x}", self.reg[8]);
-        println!("x9 (s1):    {:x}", self.reg[9]);
-        println!("x10 (a0):   {:x}", self.reg[10]);
-        println!("x11 (a1):   {:x}", self.reg[11]);
-        println!("x12 (a2):   {:x}", self.reg[12]);
-        println!("x13 (a3):   {:x}", self.reg[13]);
-        println!("x14 (a4):   {:x}", self.reg[14]);
-        println!("x15 (a5):   {:x}", self.reg[15]);
-        println!("x16 (a6):   {:x}", self.reg[16]);
-        println!("x17 (a7):   {:x}", self.reg[17]);
-        println!("x18 (s2):   {:x}", self.reg[18]);
-        println!("x19 (s3):   {:x}", self.reg[19]);
-        println!("x20 (s4):   {:x}", self.reg[20]);
-        println!("x21 (s5):   {:x}", self.reg[21]);
-        println!("x22 (s6):   {:x}", self.reg[22]);
-        println!("x23 (s7):   {:x}", self.reg[23]);
-        println!("x24 (s8):   {:x}", self.reg[24]);
-        println!("x25 (s9):   {:x}", self.reg[25]);
-        println!("x26 (s10):  {:x}", self.reg[26]);
-        println!("x27 (s11):  {:x}", self.reg[27]);
-        println!("x28 (t3):   {:x}", self.reg[28]);
-        println!("x29 (t4):   {:x}", self.reg[29]);
-        println!("x30 (t5):   {:x}", self.reg[30]);
-        println!("x31 (t6):   {:x}", self.reg[31]);
+        for i in 0..32 {
+            let reg = Reg(i);
+            println!("x{i} ({}):\t\t{:x}", reg, self.x[reg]);
+        }
     }
 
     fn execute(&mut self, inst: Inst, incr: u64) {
-        log::debug!("{:05x} {:x?}", self.pc, inst);
+        log::debug!("{:05x} {}", self.pc, inst);
 
         match inst {
             Inst::Fence => {} // noop currently
             Inst::Ecall => {
-                let id = self.reg[A7];
+                let id = self.x[A7];
                 self.syscall(id);
             }
             Inst::Error(e) => {
                 panic!("{e}");
             }
             Inst::Lui { rd, imm } => {
-                self.reg[rd as usize] = imm as u64;
+                self.x[rd] = imm as u64;
             }
             Inst::Ld { rd, rs1, offset } => {
-                let addr = self.reg[rs1 as usize].wrapping_add(offset as u64);
-                self.reg[rd as usize] = self.memory.load_u64(addr);
+                let addr = self.x[rs1].wrapping_add(offset as u64);
+                self.x[rd] = self.memory.load_u64(addr);
             }
             Inst::Lw { rd, rs1, offset } => {
-                let addr = self.reg[rs1 as usize].wrapping_add(offset as u64);
-                self.reg[rd as usize] = self.memory.load_u32(addr) as i32 as u64;
+                let addr = self.x[rs1].wrapping_add(offset as u64);
+                self.x[rd] = self.memory.load_u32(addr) as i32 as u64;
             }
             Inst::Lhu { rd, rs1, offset } => {
-                let addr = self.reg[rs1 as usize].wrapping_add(offset as u64);
-                self.reg[rd as usize] = self.memory.load_u16(addr) as u64;
+                let addr = self.x[rs1].wrapping_add(offset as u64);
+                self.x[rd] = self.memory.load_u16(addr) as u64;
             }
             Inst::Lbu { rd, rs1, offset } => {
-                let addr = self.reg[rs1 as usize].wrapping_add(offset as u64);
-                self.reg[rd as usize] = self.memory.load_u8(addr) as u64;
+                let addr = self.x[rs1].wrapping_add(offset as u64);
+                self.x[rd] = self.memory.load_u8(addr) as u64;
             }
             Inst::Sd { rs1, rs2, offset } => {
-                let addr = self.reg[rs1 as usize].wrapping_add(offset as u64);
-                self.memory.store_u64(addr, self.reg[rs2 as usize]);
+                let addr = self.x[rs1].wrapping_add(offset as u64);
+                self.memory.store_u64(addr, self.x[rs2]);
             }
             Inst::Sw { rs1, rs2, offset } => {
-                let addr = self.reg[rs1 as usize].wrapping_add(offset as u64);
-                self.memory.store_u32(addr, self.reg[rs2 as usize] as u32);
+                let addr = self.x[rs1].wrapping_add(offset as u64);
+                self.memory.store_u32(addr, self.x[rs2] as u32);
             }
             Inst::Sh { rs1, rs2, offset } => {
-                let addr = self.reg[rs1 as usize].wrapping_add(offset as u64);
-                self.memory.store_u16(addr, self.reg[rs2 as usize] as u16);
+                let addr = self.x[rs1].wrapping_add(offset as u64);
+                self.memory.store_u16(addr, self.x[rs2] as u16);
             }
             Inst::Sb { rs1, rs2, offset } => {
-                let addr = self.reg[rs1 as usize].wrapping_add(offset as u64);
-                self.memory.store_u8(addr, self.reg[rs2 as usize] as u8);
+                let addr = self.x[rs1].wrapping_add(offset as u64);
+                self.memory.store_u8(addr, self.x[rs2] as u8);
             }
-            Inst::Add { rd, rs1, rs2 } => {
-                self.reg[rd as usize] = self.reg[rs1 as usize].wrapping_add(self.reg[rs2 as usize])
-            }
+            Inst::Add { rd, rs1, rs2 } => self.x[rd] = self.x[rs1].wrapping_add(self.x[rs2]),
             Inst::Addw { rd, rs1, rs2 } => {
-                self.reg[rd as usize] = (self.reg[rs1 as usize] as u32)
-                    .wrapping_add(self.reg[rs2 as usize] as u32)
-                    as i32 as u64;
+                self.x[rd] = (self.x[rs1] as u32).wrapping_add(self.x[rs2] as u32) as i32 as u64;
             }
-            Inst::Addi { rd, rs1, imm } => {
-                self.reg[rd as usize] = self.reg[rs1 as usize].wrapping_add(imm)
-            }
+            Inst::Addi { rd, rs1, imm } => self.x[rd] = self.x[rs1].wrapping_add(imm),
             Inst::Addiw { rd, rs1, imm } => {
-                self.reg[rd as usize] =
-                    (self.reg[rs1 as usize] as u32).wrapping_add(imm) as i32 as u64;
+                self.x[rd] = (self.x[rs1] as u32).wrapping_add(imm) as i32 as u64;
             }
             Inst::And { rd, rs1, rs2 } => {
-                self.reg[rd as usize] = self.reg[rs1 as usize] & self.reg[rs2 as usize];
+                self.x[rd] = self.x[rs1] & self.x[rs2];
             }
             Inst::Andi { rd, rs1, imm } => {
-                self.reg[rd as usize] = self.reg[rs1 as usize] & imm;
+                self.x[rd] = self.x[rs1] & imm;
             }
-            Inst::Sub { rd, rs1, rs2 } => {
-                self.reg[rd as usize] = self.reg[rs1 as usize].wrapping_sub(self.reg[rs2 as usize])
-            }
+            Inst::Sub { rd, rs1, rs2 } => self.x[rd] = self.x[rs1].wrapping_sub(self.x[rs2]),
             Inst::Subw { rd, rs1, rs2 } => {
-                self.reg[rd as usize] = (self.reg[rs1 as usize] as i32)
-                    .wrapping_sub(self.reg[rs2 as usize] as i32)
-                    as u64;
+                self.x[rd] = (self.x[rs1] as i32).wrapping_sub(self.x[rs2] as i32) as u64;
             }
             Inst::Slli { rd, rs1, shamt } => {
-                self.reg[rd as usize] = self.reg[rs1 as usize] << shamt;
+                self.x[rd] = self.x[rs1] << shamt;
             }
             Inst::Slliw { rd, rs1, shamt } => {
-                self.reg[rd as usize] = ((self.reg[rs1 as usize] as u32) << shamt) as u64;
+                self.x[rd] = ((self.x[rs1] as u32) << shamt) as u64;
             }
             Inst::Srli { rd, rs1, shamt } => {
-                self.reg[rd as usize] = self.reg[rs1 as usize] >> shamt;
+                self.x[rd] = self.x[rs1] >> shamt;
             }
             Inst::Or { rd, rs1, rs2 } => {
-                self.reg[rd as usize] = self.reg[rs1 as usize] | self.reg[rs2 as usize];
+                self.x[rd] = self.x[rs1] | self.x[rs2];
             }
             Inst::Xor { rd, rs1, rs2 } => {
-                self.reg[rd as usize] = self.reg[rs1 as usize] ^ self.reg[rs2 as usize];
+                self.x[rd] = self.x[rs1] ^ self.x[rs2];
             }
             Inst::Auipc { rd, imm } => {
-                self.reg[rd as usize] = self.pc.wrapping_add(imm);
+                self.x[rd] = self.pc.wrapping_add(imm);
             }
             Inst::Jal { rd, offset } => {
-                self.reg[rd as usize] = self.pc + incr as u64;
+                self.x[rd] = self.pc + incr as u64;
                 self.pc = self.pc.wrapping_add(offset).wrapping_sub(incr);
             }
             Inst::Jalr { rd, rs1, offset } => {
-                self.reg[rd as usize] = self.pc + incr as u64;
-                self.pc = self.reg[rs1 as usize]
-                    .wrapping_add(offset)
-                    .wrapping_sub(incr);
+                self.x[rd] = self.pc + incr as u64;
+                self.pc = self.x[rs1].wrapping_add(offset).wrapping_sub(incr);
             }
             Inst::Beq { rs1, rs2, offset } => {
-                if self.reg[rs1 as usize] == self.reg[rs2 as usize] {
+                if self.x[rs1] == self.x[rs2] {
                     self.pc = self.pc.wrapping_add(offset as u64).wrapping_sub(incr);
                 }
             }
             Inst::Bne { rs1, rs2, offset } => {
-                if self.reg[rs1 as usize] != self.reg[rs2 as usize] {
+                if self.x[rs1] != self.x[rs2] {
                     self.pc = self.pc.wrapping_add(offset as u64).wrapping_sub(incr);
                 }
             }
             Inst::Blt { rs1, rs2, offset } => {
-                if (self.reg[rs1 as usize] as i64) < self.reg[rs2 as usize] as i64 {
+                if (self.x[rs1] as i64) < self.x[rs2] as i64 {
                     self.pc = self.pc.wrapping_add(offset as u64).wrapping_sub(incr);
                 }
             }
             Inst::Bltu { rs1, rs2, offset } => {
-                if self.reg[rs1 as usize] < self.reg[rs2 as usize] {
+                if self.x[rs1] < self.x[rs2] {
                     self.pc = self.pc.wrapping_add(offset as u64).wrapping_sub(incr);
                 }
             }
             Inst::Bge { rs1, rs2, offset } => {
-                if (self.reg[rs1 as usize] as i64) >= self.reg[rs2 as usize] as i64 {
+                if (self.x[rs1] as i64) >= self.x[rs2] as i64 {
                     self.pc = self.pc.wrapping_add(offset as u64).wrapping_sub(incr);
                 }
             }
             Inst::Bgeu { rs1, rs2, offset } => {
-                if self.reg[rs1 as usize] >= self.reg[rs2 as usize] {
+                if self.x[rs1] >= self.x[rs2] {
                     self.pc = self.pc.wrapping_add(offset as u64).wrapping_sub(incr);
                 }
             }
@@ -287,7 +317,7 @@ impl Emulator {
         self.pc = self.pc.wrapping_add(incr);
 
         // make sure x0 is zero
-        self.reg[0] = 0;
+        self.x[0] = 0;
     }
 }
 
@@ -302,11 +332,11 @@ mod tests {
 
         // lui a0, 1000
         emulator.execute_raw(0x003e8537);
-        assert_eq!(emulator.reg[A0], 4096000);
+        assert_eq!(emulator.x[A0], 4096000);
 
         // c.lui a0, 10
         emulator.execute_raw(0x000065a9);
-        assert_eq!(emulator.reg[A1], 40960);
+        assert_eq!(emulator.x[A1], 40960);
     }
 
     #[test_log::test]
@@ -319,19 +349,19 @@ mod tests {
 
         // ld a0, 0(x0)
         emulator.execute_raw(0x00003503);
-        assert_eq!(emulator.reg[A0], 0xdebc9a7856342312);
+        assert_eq!(emulator.x[A0], 0xdebc9a7856342312);
 
         // lw a1, 8(zero)
         emulator.execute_raw(0x00802583);
-        assert_eq!(emulator.reg[A1], 0xffffffffffffffef);
+        assert_eq!(emulator.x[A1], 0xffffffffffffffef);
 
         // lhu a1, 8(zero)
         emulator.execute_raw(0x00805583);
-        assert_eq!(emulator.reg[A1], 0x000000000000ffef);
+        assert_eq!(emulator.x[A1], 0x000000000000ffef);
 
         // lhu a1, 8(zero)
         emulator.execute_raw(0x00804583);
-        assert_eq!(emulator.reg[A1], 0x00000000000000ef);
+        assert_eq!(emulator.x[A1], 0x00000000000000ef);
     }
 
     #[test_log::test]
@@ -341,51 +371,51 @@ mod tests {
             0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, //.
         ]);
         let mut emulator = Emulator::new(0, memory);
-        emulator.reg[A0] = 0xdebc9a7856342312;
+        emulator.x[A0] = 0xdebc9a7856342312;
 
         // sd a0, 0(zero)
         // ld a1, 0(zero)
         emulator.execute_raw(0x00a03023);
         emulator.execute_raw(0x00003583);
-        assert_eq!(emulator.reg[A0], emulator.reg[A1]);
+        assert_eq!(emulator.x[A0], emulator.x[A1]);
 
         // -32 2s complement
-        emulator.reg[A0] = 0xfffffffffffffffe;
+        emulator.x[A0] = 0xfffffffffffffffe;
         // sw a0, 0(zero)
         // lw a1, 0(zero)
         emulator.execute_raw(0x00a02023);
         emulator.execute_raw(0x00002583);
-        assert_eq!(emulator.reg[A0], emulator.reg[A1]);
+        assert_eq!(emulator.x[A0], emulator.x[A1]);
 
         // ld a1, 0(zero)
         emulator.execute_raw(0x00003583);
-        assert_ne!(emulator.reg[A0], emulator.reg[A1]);
+        assert_ne!(emulator.x[A0], emulator.x[A1]);
     }
 
     #[test_log::test]
     fn sp_relative() {
         let memory = Memory::from_raw(&[]);
         let mut emulator = Emulator::new(0, memory);
-        emulator.reg[A0] = 0xdebc9a7856342312;
-        let sp_start = emulator.reg[SP];
+        emulator.x[A0] = 0xdebc9a7856342312;
+        let sp_start = emulator.x[SP];
 
         // C.SDSP a0, 0
         emulator.execute_raw(0x0000e02a);
 
         // C.LDSP a1, 0
         emulator.execute_raw(0x00006582);
-        assert_eq!(emulator.reg[A0], emulator.reg[A1]);
+        assert_eq!(emulator.x[A0], emulator.x[A1]);
 
         // C.ADDI4SPN a0, 8
         emulator.execute_raw(0x00000028);
-        assert_eq!(emulator.reg[A0], emulator.reg[SP] + 8);
+        assert_eq!(emulator.x[A0], emulator.x[SP] + 8);
 
         // C.ADDI16SP 32
         emulator.execute_raw(0x00006105);
-        assert_eq!(emulator.reg[SP], sp_start + 32);
+        assert_eq!(emulator.x[SP], sp_start + 32);
 
         // C.ADDI16SP -64
         emulator.execute_raw(0x00007139);
-        assert_eq!(emulator.reg[SP], sp_start - 32);
+        assert_eq!(emulator.x[SP], sp_start - 32);
     }
 }

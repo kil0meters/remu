@@ -57,12 +57,6 @@ impl Memory {
                 PT_LOAD => {
                     let mut data = Vec::from(elf.segment_data(&segment).unwrap());
 
-                    debug!(
-                        "{}, {} (type = {})",
-                        data.len(),
-                        segment.p_memsz,
-                        segment.p_type
-                    );
                     assert!(data.len() as u64 <= segment.p_memsz);
 
                     data.resize(segment.p_memsz as usize, 0);
@@ -196,18 +190,31 @@ impl Memory {
             }
         }
 
-        // else try to load from stack
-        // debug!("{STACK_START:x} - {idx:x}");
-        let stack_idx = STACK_START - idx;
-        if idx <= STACK_START {
+        let heap_start = self.heap_pointer - self.heap.len() as u64;
+        if idx >= heap_start && idx < self.heap_pointer {
+            debug!(
+                "store byte: {:x} - ({:x} - {:x})",
+                idx,
+                self.heap_pointer,
+                self.heap.len()
+            );
+
+            let heap_idx = idx - heap_start;
+
+            self.heap[heap_idx as usize]
+        } else if idx <= STACK_START {
+            let stack_idx = STACK_START - idx;
+
             // TODO: It's possible that this extends the stack too much. IDK really
             if (stack_idx as usize) >= self.stack.len() {
-                self.stack.resize(stack_idx as usize + 1, 0);
+                if stack_idx as usize - self.stack.len() < 0xffffff {
+                    self.stack.resize(stack_idx as usize + 1, 0);
+                }
             }
 
             self.stack[stack_idx as usize]
         } else {
-            panic!("Attempted to load from address not mapped to memory: {idx:x}");
+            panic!("Attempted to store to address not mapped to memoery: {idx:x}");
         }
     }
 

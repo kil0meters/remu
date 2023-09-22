@@ -30,11 +30,14 @@ pub enum Inst {
     Andi { rd: Reg, rs1: Reg, imm: u64 },
     Sub { rd: Reg, rs1: Reg, rs2: Reg },
     Subw { rd: Reg, rs1: Reg, rs2: Reg },
-    Slli { rd: Reg, rs1: Reg, shamt: u64 },
+    Sll { rd: Reg, rs1: Reg, rs2: Reg },
+    Slli { rd: Reg, rs1: Reg, shamt: u32 },
     Slliw { rd: Reg, rs1: Reg, shamt: u32 },
-    Srli { rd: Reg, rs1: Reg, shamt: u64 },
-    Srai { rd: Reg, rs1: Reg, shamt: u64 },
+    Srl { rd: Reg, rs1: Reg, rs2: Reg },
+    Srli { rd: Reg, rs1: Reg, shamt: u32 },
     Srliw { rd: Reg, rs1: Reg, shamt: u32 },
+    Srai { rd: Reg, rs1: Reg, shamt: u32 },
+    Sraiw { rd: Reg, rs1: Reg, shamt: u32 },
     Or { rd: Reg, rs1: Reg, rs2: Reg },
     Ori { rd: Reg, rs1: Reg, imm: u64 },
     Xor { rd: Reg, rs1: Reg, rs2: Reg },
@@ -62,6 +65,9 @@ pub enum Inst {
     Amoswapd { rd: Reg, rs1: Reg, rs2: Reg },
     Lrw { rd: Reg, rs1: Reg },
     Scw { rd: Reg, rs1: Reg, rs2: Reg },
+
+    // FLOATING POINT
+    Fsd { rs1: Reg, rs2: Reg, offset: i32 },
 }
 
 impl Display for Inst {
@@ -87,11 +93,14 @@ impl Display for Inst {
             Inst::Andi { rd, rs1, imm } => write!(f, "andi  {rd}, {rs1}, {}", imm as i64),
             Inst::Sub { rd, rs1, rs2 } => write!(f, "sub   {rd}, {rs1}, {rs2}"),
             Inst::Subw { rd, rs1, rs2 } => write!(f, "subw  {rd}, {rs1}, {rs2}"),
+            Inst::Sll { rd, rs1, rs2 } => write!(f, "sll  {rd}, {rs1}, {rs2}"),
             Inst::Slli { rd, rs1, shamt } => write!(f, "slli  {rd}, {rs1}, {shamt}"),
             Inst::Slliw { rd, rs1, shamt } => write!(f, "slliw {rd}, {rs1}, {shamt}"),
+            Inst::Srl { rd, rs1, rs2 } => write!(f, "srl  {rd}, {rs1}, {rs2}"),
             Inst::Srli { rd, rs1, shamt } => write!(f, "srli  {rd}, {rs1}, {shamt}"),
             Inst::Srliw { rd, rs1, shamt } => write!(f, "srliw {rd}, {rs1}, {shamt}"),
             Inst::Srai { rd, rs1, shamt } => write!(f, "srai  {rd}, {rs1}, {shamt}"),
+            Inst::Sraiw { rd, rs1, shamt } => write!(f, "srai  {rd}, {rs1}, {shamt}"),
             Inst::Or { rd, rs1, rs2 } => write!(f, "or    {rd}, {rs1}, {rs2}"),
             Inst::Ori { rd, rs1, imm } => write!(f, "ori   {rd}, {rs1}, {imm}"),
             Inst::Xor { rd, rs1, rs2 } => write!(f, "xor   {rd}, {rs1}, {rs2}"),
@@ -114,6 +123,7 @@ impl Display for Inst {
             Inst::Sltiu { rd, rs1, imm } => write!(f, "sltiu {rd}, {rs1}, {imm}"),
             Inst::Lrw { rd, rs1 } => write!(f, "lr.w  {rd}, ({rs1})"),
             Inst::Scw { rd, rs1, rs2 } => write!(f, "sc.w  {rd}, {rs2},({rs1})"),
+            Inst::Fsd { rs1, rs2, offset } => write!(f, "fsd   {rs2}, {offset}({rs1})"),
         }
     }
 }
@@ -157,13 +167,13 @@ impl Inst {
                 match funct3 {
                     0b000 => Inst::Addi { rd, rs1, imm },
                     0b001 => {
-                        let shamt = ((inst >> 20) & 0b11111) as u64;
+                        let shamt = (inst >> 20) & 0b11111;
                         Inst::Slli { rd, rs1, shamt }
                     }
                     0b011 => Inst::Sltiu { rd, rs1, imm },
                     0b100 => Inst::Xori { rd, rs1, imm },
                     0b101 => {
-                        let shamt = ((inst >> 20) & 0b11111) as u64;
+                        let shamt = (inst >> 20) & 0b11111;
                         Inst::Srli { rd, rs1, shamt }
                     }
                     0b110 => Inst::Ori { rd, rs1, imm },
@@ -191,9 +201,12 @@ impl Inst {
                     Inst::Slliw { rd, rs1, shamt }
                 }
                 0b101 => {
-                    assert_eq!(funct7, 0); // TODO: handle SRAIW
                     let shamt = ((inst >> 20) & 0b111111) as u32;
-                    Inst::Srliw { rd, rs1, shamt }
+                    match funct7 {
+                        0b0000000 => Inst::Srliw { rd, rs1, shamt },
+                        0b0100000 => Inst::Sraiw { rd, rs1, shamt },
+                        _ => todo!(),
+                    }
                 }
                 _ => Inst::Error(format!("unimplemented: {opcode:b} funct3={funct3:b}").into()),
             },
@@ -212,6 +225,14 @@ impl Inst {
                 }
             }
 
+            0b0100111 => {
+                assert_eq!(funct3, 0b011);
+                let offset = ((inst & 0b11111110000000000000000000000000) as i32) >> 20 // imm[11:5]
+                           | (inst & 0b111110000000) as i32 >> 7; // imm[4:0]
+
+                Inst::Fsd { rs2, rs1, offset }
+            }
+
             0b0110011 => match funct3 {
                 0b000 => match funct7 {
                     0b0000000 => Inst::Add { rd, rs1, rs2 },
@@ -219,13 +240,18 @@ impl Inst {
                     0b0000001 => Inst::Mul { rd, rs1, rs2 },
                     _ => panic!("Invalid instruction"),
                 },
+                0b001 => match funct7 {
+                    0b0000000 => Inst::Sll { rd, rs1, rs2 },
+                    _ => panic!("Invalid i think"),
+                },
                 0b011 => match funct7 {
                     0b0000000 => Inst::Sltu { rd, rs1, rs2 },
                     _ => panic!("Trick or treat!"),
                 },
                 0b101 => match funct7 {
+                    0b0000000 => Inst::Srl { rd, rs1, rs2 },
                     0b0000001 => Inst::Divu { rd, rs1, rs2 },
-                    _ => panic!("Boojookieland"),
+                    _ => panic!("Boojookieland: {funct7:07b}"),
                 },
 
                 0b111 => match funct7 {
@@ -352,7 +378,16 @@ impl Inst {
                     }
                     0b101 => {
                         // C.FSD
-                        panic!("C.FSD");
+                        let rs2 = Reg((((inst >> 2) & 0b111) + 8) as u8);
+                        let rs1 = Reg((((inst >> 7) & 0b111) + 8) as u8);
+                        let offset = (inst & 0b1100000) << 1 // imm[7:6]
+                                   | (inst & 0b1110000000000) >> 7; // imm[5:3]
+
+                        Inst::Fsd {
+                            rs1,
+                            rs2,
+                            offset: offset as i32,
+                        }
                     }
                     0b110 => {
                         // C.SW
@@ -466,7 +501,7 @@ impl Inst {
                                 Inst::Srli {
                                     rd,
                                     rs1: rd,
-                                    shamt: shamt as u64,
+                                    shamt: shamt as u32,
                                 }
                             }
 
@@ -481,7 +516,7 @@ impl Inst {
                                 Inst::Srai {
                                     rd,
                                     rs1: rd,
-                                    shamt: shamt as u64,
+                                    shamt: shamt as u32,
                                 }
                             }
 
@@ -581,7 +616,7 @@ impl Inst {
                         Inst::Slli {
                             rd,
                             rs1: rd,
-                            shamt: shamt as u64,
+                            shamt: shamt as u32,
                         }
                     }
                     0b010 => {

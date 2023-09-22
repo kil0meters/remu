@@ -3,18 +3,20 @@ use std::{
     ops::{Index, IndexMut},
 };
 
+use num_traits::FromPrimitive;
+
 use crate::{
     auxvec::{AuxPair, Auxv, RANDOM_BYTES},
     instruction::Inst,
     memory::Memory,
-    syscalls::{
-        self, BRK, CLOCK_GETTIME, EXIT, EXIT_GROUP, FACCESSAT, GETRANDOM, MMAP, MPROTECT,
-        PRLIMIT64, READLINKAT, SET_ROBUST_LIST, SET_TID_ADDRESS, WRITE,
-    },
+    syscalls::Syscall,
 };
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct Reg(pub u8);
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct FReg(pub u8);
 
 impl<T> Index<Reg> for [T] {
     type Output = T;
@@ -25,6 +27,19 @@ impl<T> Index<Reg> for [T] {
 
 impl<T> IndexMut<Reg> for [T] {
     fn index_mut(&mut self, index: Reg) -> &mut Self::Output {
+        &mut self[index.0 as usize]
+    }
+}
+
+impl<T> Index<FReg> for [T] {
+    type Output = T;
+    fn index(&self, index: FReg) -> &Self::Output {
+        &self[index.0 as usize]
+    }
+}
+
+impl<T> IndexMut<FReg> for [T] {
+    fn index_mut(&mut self, index: FReg) -> &mut Self::Output {
         &mut self[index.0 as usize]
     }
 }
@@ -71,6 +86,48 @@ impl Display for Reg {
     }
 }
 
+impl Display for FReg {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let s = match self.0 {
+            0 => "ft0",
+            1 => "ft1",
+            2 => "ft2",
+            3 => "ft3",
+            4 => "ft4",
+            5 => "ft5",
+            6 => "ft6",
+            7 => "ft7",
+            8 => "fs0",
+            9 => "fs1",
+            10 => "fa0",
+            11 => "fa1",
+            12 => "fa2",
+            13 => "fa3",
+            14 => "fa4",
+            15 => "fa5",
+            16 => "fa6",
+            17 => "fa7",
+            18 => "fs2",
+            19 => "fs3",
+            20 => "fs4",
+            21 => "fs5",
+            22 => "fs6",
+            23 => "fs7",
+            24 => "fs8",
+            25 => "fs9",
+            26 => "fs10",
+            27 => "fs11",
+            28 => "ft8",
+            29 => "ft9",
+            30 => "ft10",
+            31 => "ft11",
+            _ => unreachable!(),
+        };
+
+        write!(f, "{s}")
+    }
+}
+
 pub const SP: Reg = Reg(2);
 pub const S0: Reg = Reg(8);
 pub const S1: Reg = Reg(9);
@@ -98,7 +155,9 @@ pub const USER_STACK_OFFSET: u64 = 201;
 
 pub struct Emulator {
     pc: u64,
+    fscr: u64,
     x: [u64; 32],
+    f: [f64; 32],
     memory: Memory,
 
     exit_code: Option<u64>,
@@ -113,7 +172,9 @@ impl Emulator {
     pub fn new(entry: u64, memory: Memory) -> Self {
         let mut em = Self {
             pc: entry,
+            fscr: 0,
             x: [0; 32],
+            f: [0.0; 32],
             memory,
             exit_code: None,
             fuel_counter: 0,
@@ -177,13 +238,25 @@ impl Emulator {
     fn syscall(&mut self, id: u64) {
         let arg = self.x[A0];
 
-        match id {
-            FACCESSAT => {
+        let sc: Syscall = FromPrimitive::from_u64(id).unwrap();
+
+        // self.print_registers();
+        eprintln!("Executing syscall {sc:?}");
+
+        let mut s = String::new();
+        std::io::stdin().read_line(&mut s).ok();
+
+        if self.pc == 0x10544 {
+            panic!();
+        }
+
+        match sc {
+            Syscall::Faccessat => {
                 self.x[A0] = (-1i64) as u64;
                 // TODO: currently just noop (maybe that's fine, who knows)
             }
 
-            WRITE => {
+            Syscall::Write => {
                 log::debug!(
                     "Writing to file={}, addr={:x}, nbytes={}",
                     self.x[A0],
@@ -200,7 +273,23 @@ impl Emulator {
                 println!();
             }
 
-            READLINKAT => {
+            Syscall::Writev => {
+                let fd = self.x[A0];
+                assert!(fd <= 2);
+
+                let iovecs = self.x[A1];
+                let iovcnt = self.x[A2];
+
+                for i in 0..iovcnt {
+                    let ptr = self.memory.load_u64(iovecs + (i * 16));
+                    let len = self.memory.load_u64(iovecs + 8 + (i * 16));
+
+                    let s = self.memory.read_string_n(ptr, len);
+                    println!("{s}");
+                }
+            }
+
+            Syscall::Readlinkat => {
                 // let dirfd = self.x[A0];
                 let addr = self.x[A1];
                 let buf_addr = self.x[A2];
@@ -214,63 +303,83 @@ impl Emulator {
 
                 if s == "/proc/self/exe" {
                     self.memory.write_string_n(b"/prog\0", buf_addr, bufsize);
+                    self.x[A0] = 6;
                 } else {
+                    self.x[A0] = -1i64 as u64;
                     panic!("Arbitrary file reading is not supported... YAHHH!");
                 }
-
-                self.x[A0] = 0;
             }
 
-            EXIT => {
+            Syscall::Exit => {
                 self.exit_code = Some(arg);
             }
 
-            EXIT_GROUP => {
+            Syscall::ExitGroup => {
                 self.exit_code = Some(arg);
             }
 
-            SET_TID_ADDRESS => {
+            Syscall::SetTidAddress => {
                 self.x[A0] = 0;
             }
 
-            SET_ROBUST_LIST => {
+            Syscall::Futex => {
+                self.x[A0] = 0;
+                self.memory.store_u64(self.x[A5], 0);
+                // self.x[A0] = 0;
+            }
+
+            Syscall::SetRobustList => {
                 self.x[A0] = 0;
             }
 
-            CLOCK_GETTIME => {
+            Syscall::ClockGettime => {
                 // noop
             }
 
-            BRK => {
+            Syscall::Tgkill => {
+                self.x[A0] = -1i64 as u64;
+            }
+
+            Syscall::RtSigprocmask => {
+                self.x[A0] = 0;
+            }
+
+            Syscall::Getpid => {
+                self.x[A0] = 0;
+            }
+
+            Syscall::Gettid => {
+                self.x[A0] = 0;
+            }
+
+            Syscall::Brk => {
                 println!("brk_addr_before={:x}", self.memory.heap_pointer);
                 self.x[A0] = self.memory.brk(arg);
                 println!("brk_addr_after={:x}", self.memory.heap_pointer);
             }
 
-            MMAP => {
+            Syscall::Mmap => {
                 self.x[A0] = self.memory.mmap(self.x[A1]);
             }
 
-            MPROTECT => {
+            Syscall::Mprotect => {
                 self.x[A0] = 0;
             }
 
-            PRLIMIT64 => {
+            Syscall::Prlimit64 => {
                 self.x[A0] = 0;
             }
 
-            GETRANDOM => {
+            Syscall::Getrandom => {
                 let buf = self.x[A0];
                 let buflen = self.x[A1];
 
                 // we want this emulator to be deterministic
                 for i in buf..(buf + buflen) {
-                    self.memory.store_u8(i, 0);
+                    self.memory.store_u8(i, 0xff);
                 }
-            }
 
-            _ => {
-                unimplemented!("syscall {id} not implemented.");
+                self.x[A0] = buflen;
             }
         }
     }
@@ -280,9 +389,11 @@ impl Emulator {
         let (inst, incr) = Inst::decode(inst_data);
 
         println!("{:3} {:05x} {}", self.fuel_counter, self.pc, inst);
-        self.print_registers();
-        // let mut s = String::new();
-        // std::io::stdin().read_line(&mut s).ok();
+        // if self.fuel_counter >= 5100 {
+        //     self.print_registers();
+        //     let mut s = String::new();
+        //     std::io::stdin().read_line(&mut s).ok();
+        // }
 
         self.execute(inst, incr as u64);
 
@@ -339,8 +450,11 @@ impl Emulator {
             }
             Inst::Sd { rs1, rs2, offset } => {
                 let addr = self.x[rs1].wrapping_add(offset as u64);
-
                 self.memory.store_u64(addr, self.x[rs2]);
+            }
+            Inst::Fsd { rs1, rs2, offset } => {
+                let addr = self.x[rs1].wrapping_add(offset as u64);
+                self.memory.store_u64(addr, self.f[rs2].to_bits());
             }
             Inst::Sw { rs1, rs2, offset } => {
                 let addr = self.x[rs1].wrapping_add(offset as u64);
@@ -372,20 +486,29 @@ impl Emulator {
             Inst::Subw { rd, rs1, rs2 } => {
                 self.x[rd] = (self.x[rs1] as i32).wrapping_sub(self.x[rs2] as i32) as u64;
             }
+            Inst::Sll { rd, rs1, rs2 } => {
+                self.x[rd] = self.x[rs1] << self.x[rs2];
+            }
             Inst::Slli { rd, rs1, shamt } => {
                 self.x[rd] = self.x[rs1] << shamt;
             }
             Inst::Slliw { rd, rs1, shamt } => {
                 self.x[rd] = ((self.x[rs1] as u32) << shamt) as u64;
             }
+            Inst::Srl { rd, rs1, rs2 } => {
+                self.x[rd] = self.x[rs1] >> self.x[rs2];
+            }
             Inst::Srli { rd, rs1, shamt } => {
                 self.x[rd] = self.x[rs1] >> shamt;
+            }
+            Inst::Srliw { rd, rs1, shamt } => {
+                self.x[rd] = ((self.x[rs1] as u32) >> shamt) as u64;
             }
             Inst::Srai { rd, rs1, shamt } => {
                 self.x[rd] = ((self.x[rs1] as i64) >> shamt) as u64;
             }
-            Inst::Srliw { rd, rs1, shamt } => {
-                self.x[rd] = ((self.x[rs1] as u32) >> shamt) as u64;
+            Inst::Sraiw { rd, rs1, shamt } => {
+                self.x[rd] = ((self.x[rs1] as i32) >> shamt) as u64;
             }
             Inst::Or { rd, rs1, rs2 } => {
                 self.x[rd] = self.x[rs1] | self.x[rs2];
@@ -465,7 +588,7 @@ impl Emulator {
                 self.x[rd] = self.x[rs1] % self.x[rs2];
             }
             Inst::Amoswapw { rd, rs1, rs2 } => {
-                self.x[rd] = self.memory.load_u32(self.x[rs1] as u32 as u64) as i32 as u64;
+                self.x[rd] = self.memory.load_u32(self.x[rs1]) as i32 as u64;
                 self.memory.store_u32(self.x[rs1], self.x[rs2] as u32);
             }
             Inst::Amoswapd { rd, rs1, rs2 } => {

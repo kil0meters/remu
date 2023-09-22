@@ -283,6 +283,19 @@ impl Memory {
         }
     }
 
+    pub fn read_string_n(&mut self, mut addr: u64, len: u64) -> String {
+        let mut data = Vec::new();
+        // read bytes until we get null
+        for _ in 0..len {
+            let c = self.load_u8(addr);
+            addr += 1;
+            data.push(c);
+        }
+
+        let s = String::from_utf8_lossy(&data);
+        s.into()
+    }
+
     // super unsafe, probably requires null termination
     pub fn read_string(&mut self, mut addr: u64) -> String {
         let mut data = Vec::new();

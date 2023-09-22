@@ -205,8 +205,7 @@ impl Memory {
                 }
             }
 
-            // lol
-            self.stack.get(stack_idx as usize).copied().unwrap_or(0)
+            self.stack[stack_idx as usize]
         } else {
             panic!("Attempted to store to address not mapped to memoery: {idx:x}");
         }

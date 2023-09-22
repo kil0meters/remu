@@ -54,7 +54,7 @@ impl Display for Inst {
             Inst::Fence => write!(f, "fence"),
             Inst::Ecall => write!(f, "ecall"),
             Inst::Error(ref e) => write!(f, "error: {e}"),
-            Inst::Lui { rd, imm } => write!(f, "lui  {}, 0x{:x}", rd, imm << 12),
+            Inst::Lui { rd, imm } => write!(f, "lui   {}, 0x{:x}", rd, imm << 12),
             Inst::Ld { rd, rs1, offset } => write!(f, "ld    {}, {}({})", rd, offset, rs1),
             Inst::Lw { rd, rs1, offset } => write!(f, "lw    {}, {}({})", rd, offset, rs1),
             Inst::Lhu { rd, rs1, offset } => write!(f, "lhu   {}, {}({})", rd, offset, rs1),

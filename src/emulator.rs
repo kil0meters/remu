@@ -8,7 +8,7 @@ use crate::{
     memory::Memory,
     syscalls::{
         self, BRK, EXIT, EXIT_GROUP, FACCESSAT, MMAP, PRLIMIT64, READLINKAT, SET_ROBUST_LIST,
-        SET_TID_ADDRESS,
+        SET_TID_ADDRESS, WRITE,
     },
 };
 
@@ -119,14 +119,26 @@ impl Emulator {
 
         match id {
             FACCESSAT => {
-                self.x[A0] = 0;
+                self.x[A0] = (-1i64) as u64;
                 // TODO: currently just noop (maybe that's fine, who knows)
             }
 
-            READLINKAT => {
-                // noop
-            }
+            WRITE => {
+                log::debug!(
+                    "Writing to file={}, addr={:x}, nbytes={}",
+                    self.x[A0],
+                    self.x[A1],
+                    self.x[A2]
+                );
 
+                let addr = self.x[A1];
+
+                for i in 0..8 {
+                    print!("\"{}\" ", self.memory.load_u8(addr + i));
+                }
+
+                println!();
+            }
             EXIT => {
                 self.exit_code = Some(arg);
             }
@@ -136,11 +148,11 @@ impl Emulator {
             }
 
             SET_TID_ADDRESS => {
-                // noop
+                self.x[A0] = (-1i64) as u64;
             }
 
             SET_ROBUST_LIST => {
-                // noop
+                self.x[A0] = (-1i64) as u64;
             }
 
             BRK => {
@@ -151,10 +163,6 @@ impl Emulator {
 
             MMAP => {
                 self.x[A0] = self.memory.mmap(self.x[A1]);
-            }
-
-            PRLIMIT64 => {
-                // noop
             }
 
             _ => {
@@ -201,7 +209,7 @@ impl Emulator {
         log::debug!("{:05x} {}", self.pc, inst);
 
         match inst {
-            Inst::Fence => {} // noop currently
+            Inst::Fence => {} // noop currently, to do with concurrency I think
             Inst::Ecall => {
                 let id = self.x[A7];
                 self.syscall(id);
@@ -246,11 +254,11 @@ impl Emulator {
             }
             Inst::Add { rd, rs1, rs2 } => self.x[rd] = self.x[rs1].wrapping_add(self.x[rs2]),
             Inst::Addw { rd, rs1, rs2 } => {
-                self.x[rd] = (self.x[rs1] as u32).wrapping_add(self.x[rs2] as u32) as i32 as u64;
+                self.x[rd] = (self.x[rs1] as i32).wrapping_add(self.x[rs2] as i32) as u64;
             }
             Inst::Addi { rd, rs1, imm } => self.x[rd] = self.x[rs1].wrapping_add(imm),
             Inst::Addiw { rd, rs1, imm } => {
-                self.x[rd] = (self.x[rs1] as u32).wrapping_add(imm) as i32 as u64;
+                self.x[rd] = (self.x[rs1] as i32).wrapping_add(imm as i32) as u64;
             }
             Inst::And { rd, rs1, rs2 } => {
                 self.x[rd] = self.x[rs1] & self.x[rs2];

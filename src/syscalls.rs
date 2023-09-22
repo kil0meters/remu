@@ -62,7 +62,12 @@ pub const QUOTACTL: u64 = 60;
 pub const GETDENTS64: u64 = 61;
 pub const LSEEK: u64 = 62;
 pub const READ: u64 = 63;
+
+/// A0 - filed
+/// A1 - buf
+/// A2 - bytes
 pub const WRITE: u64 = 64;
+
 pub const READV: u64 = 65;
 pub const WRITEV: u64 = 66;
 pub const PREAD64: u64 = 67;

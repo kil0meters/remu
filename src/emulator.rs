@@ -8,8 +8,8 @@ use crate::{
     instruction::Inst,
     memory::Memory,
     syscalls::{
-        self, BRK, CLOCK_GETTIME, EXIT, EXIT_GROUP, FACCESSAT, GETRANDOM, MMAP, PRLIMIT64,
-        READLINKAT, SET_ROBUST_LIST, SET_TID_ADDRESS, WRITE,
+        self, BRK, CLOCK_GETTIME, EXIT, EXIT_GROUP, FACCESSAT, GETRANDOM, MMAP, MPROTECT,
+        PRLIMIT64, READLINKAT, SET_ROBUST_LIST, SET_TID_ADDRESS, WRITE,
     },
 };
 
@@ -251,6 +251,10 @@ impl Emulator {
                 self.x[A0] = self.memory.mmap(self.x[A1]);
             }
 
+            MPROTECT => {
+                self.x[A0] = 0;
+            }
+
             PRLIMIT64 => {
                 self.x[A0] = 0;
             }
@@ -377,6 +381,9 @@ impl Emulator {
             Inst::Srli { rd, rs1, shamt } => {
                 self.x[rd] = self.x[rs1] >> shamt;
             }
+            Inst::Srai { rd, rs1, shamt } => {
+                self.x[rd] = ((self.x[rs1] as i64) >> shamt) as u64;
+            }
             Inst::Srliw { rd, rs1, shamt } => {
                 self.x[rd] = ((self.x[rs1] as u32) >> shamt) as u64;
             }
@@ -459,17 +466,18 @@ impl Emulator {
             }
             Inst::Amoswapw { rd, rs1, rs2 } => {
                 self.x[rd] = self.memory.load_u32(self.x[rs1] as u32 as u64) as i32 as u64;
-                let tmp = self.x[rs2] as i32 as u64;
-                self.x[rs2] = self.x[rd];
-                self.x[rd] = tmp;
-                self.memory.store_u32(self.x[rs1], self.x[rd] as u32);
+                self.memory.store_u32(self.x[rs1], self.x[rs2] as u32);
             }
             Inst::Amoswapd { rd, rs1, rs2 } => {
                 self.x[rd] = self.memory.load_u64(self.x[rs1]);
-                let tmp = self.x[rs2];
-                self.x[rs2] = self.x[rd];
-                self.x[rd] = tmp;
-                self.memory.store_u64(self.x[rs1], self.x[rd]);
+                self.memory.store_u64(self.x[rs1], self.x[rs2]);
+            }
+            Inst::Lrw { rd, rs1 } => {
+                self.x[rd] = self.memory.load_u32(self.x[rs1]) as i32 as u64;
+            }
+            Inst::Scw { rd, rs1, rs2 } => {
+                self.x[rd] = 0;
+                self.memory.store_u32(self.x[rs1], self.x[rs2] as u32);
             }
         }
 

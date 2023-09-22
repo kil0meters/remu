@@ -33,6 +33,8 @@ pub enum Inst {
     Slli { rd: Reg, rs1: Reg, shamt: u64 },
     Slliw { rd: Reg, rs1: Reg, shamt: u32 },
     Srli { rd: Reg, rs1: Reg, shamt: u64 },
+    Srai { rd: Reg, rs1: Reg, shamt: u64 },
+    Srliw { rd: Reg, rs1: Reg, shamt: u32 },
     Or { rd: Reg, rs1: Reg, rs2: Reg },
     Ori { rd: Reg, rs1: Reg, imm: u64 },
     Xor { rd: Reg, rs1: Reg, rs2: Reg },
@@ -52,13 +54,14 @@ pub enum Inst {
     Bgeu { rs1: Reg, rs2: Reg, offset: i32 },
     Mul { rd: Reg, rs1: Reg, rs2: Reg },
     Remu { rd: Reg, rs1: Reg, rs2: Reg },
-    Srliw { rd: Reg, rs1: Reg, shamt: u32 },
     Sltu { rd: Reg, rs1: Reg, rs2: Reg },
     Sltiu { rd: Reg, rs1: Reg, imm: u64 },
 
     // ATOMICS
     Amoswapw { rd: Reg, rs1: Reg, rs2: Reg },
     Amoswapd { rd: Reg, rs1: Reg, rs2: Reg },
+    Lrw { rd: Reg, rs1: Reg },
+    Scw { rd: Reg, rs1: Reg, rs2: Reg },
 }
 
 impl Display for Inst {
@@ -88,6 +91,7 @@ impl Display for Inst {
             Inst::Slliw { rd, rs1, shamt } => write!(f, "slliw {rd}, {rs1}, {shamt}"),
             Inst::Srli { rd, rs1, shamt } => write!(f, "srli  {rd}, {rs1}, {shamt}"),
             Inst::Srliw { rd, rs1, shamt } => write!(f, "srliw {rd}, {rs1}, {shamt}"),
+            Inst::Srai { rd, rs1, shamt } => write!(f, "srai  {rd}, {rs1}, {shamt}"),
             Inst::Or { rd, rs1, rs2 } => write!(f, "or    {rd}, {rs1}, {rs2}"),
             Inst::Ori { rd, rs1, imm } => write!(f, "ori   {rd}, {rs1}, {imm}"),
             Inst::Xor { rd, rs1, rs2 } => write!(f, "xor   {rd}, {rs1}, {rs2}"),
@@ -104,10 +108,12 @@ impl Display for Inst {
             Inst::Divu { rd, rs1, rs2 } => write!(f, "divu  {rd}, {rs1}, {rs2}"),
             Inst::Mul { rd, rs1, rs2 } => write!(f, "mul   {rd}, {rs1}, {rs2}"),
             Inst::Remu { rd, rs1, rs2 } => write!(f, "remu  {rd}, {rs1}, {rs2}"),
-            Inst::Amoswapw { rd, rs1, rs2 } => write!(f, "amoswapw {rd}, {rs1}, {rs2}"),
-            Inst::Amoswapd { rd, rs1, rs2 } => write!(f, "amoswapd {rd}, {rs1}, {rs2}"),
+            Inst::Amoswapw { rd, rs1, rs2 } => write!(f, "amoswap.w {rd}, {rs1}, {rs2}"),
+            Inst::Amoswapd { rd, rs1, rs2 } => write!(f, "amoswap.d {rd}, {rs1}, {rs2}"),
             Inst::Sltu { rd, rs1, rs2 } => write!(f, "sltu {rd}, {rs1}, {rs2}"),
             Inst::Sltiu { rd, rs1, imm } => write!(f, "sltiu {rd}, {rs1}, {imm}"),
+            Inst::Lrw { rd, rs1 } => write!(f, "lr.w  {rd}, ({rs1})"),
+            Inst::Scw { rd, rs1, rs2 } => write!(f, "sc.w  {rd}, {rs2},({rs1})"),
         }
     }
 }
@@ -249,12 +255,8 @@ impl Inst {
                 // ATOMICS, we don't actually do much to support these since the emulator is strictly single threaded.
                 0b010 => match funct5 {
                     0b00001 => Inst::Amoswapw { rd, rs1, rs2 },
-                    0b00010 => Inst::Lw { rd, rs1, offset: 0 },
-                    0b00011 => Inst::Sw {
-                        rs2,
-                        rs1,
-                        offset: 0,
-                    },
+                    0b00010 => Inst::Lrw { rd, rs1 },
+                    0b00011 => Inst::Scw { rs2, rs1, rd },
                     _ => panic!(),
                 },
                 0b011 => match funct5 {
@@ -347,6 +349,10 @@ impl Inst {
                             rs1,
                             offset: offset as i32,
                         }
+                    }
+                    0b101 => {
+                        // C.FSD
+                        panic!("C.FSD");
                     }
                     0b110 => {
                         // C.SW
@@ -464,6 +470,21 @@ impl Inst {
                                 }
                             }
 
+                            0b01 => {
+                                let shamt = (inst & 0b1000000000000) >> 7 // imm[5]
+                                          | (inst & 0b1111100) >> 2; // imm[4:0]
+
+                                if shamt == 0 {
+                                    panic!("Immediate must be nonzero");
+                                }
+
+                                Inst::Srai {
+                                    rd,
+                                    rs1: rd,
+                                    shamt: shamt as u64,
+                                }
+                            }
+
                             // C.ANDI
                             0b10 => {
                                 let imm = ((inst & 0b1000000000000) << 3) as i16 >> 10 // imm[5]
@@ -494,7 +515,7 @@ impl Inst {
                                 }
                             }
                             _ => Inst::Error(
-                                format!("unimplemented instruction: {inst:0b} {funct2:0b}").into(),
+                                format!("unimplemented instruction: {inst:0b} {funct2:02b}").into(),
                             ),
                         }
                     }

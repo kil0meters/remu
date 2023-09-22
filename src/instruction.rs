@@ -1,6 +1,6 @@
 use std::fmt::Display;
 
-use crate::emulator::{Reg, SP};
+use crate::emulator::{FReg, Reg, SP};
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum Inst {
@@ -67,7 +67,7 @@ pub enum Inst {
     Scw { rd: Reg, rs1: Reg, rs2: Reg },
 
     // FLOATING POINT
-    Fsd { rs1: Reg, rs2: Reg, offset: i32 },
+    Fsd { rs1: Reg, rs2: FReg, offset: i32 },
 }
 
 impl Display for Inst {
@@ -230,7 +230,11 @@ impl Inst {
                 let offset = ((inst & 0b11111110000000000000000000000000) as i32) >> 20 // imm[11:5]
                            | (inst & 0b111110000000) as i32 >> 7; // imm[4:0]
 
-                Inst::Fsd { rs2, rs1, offset }
+                Inst::Fsd {
+                    rs2: FReg(rs2.0),
+                    rs1,
+                    offset,
+                }
             }
 
             0b0110011 => match funct3 {
@@ -385,7 +389,7 @@ impl Inst {
 
                         Inst::Fsd {
                             rs1,
-                            rs2,
+                            rs2: FReg(rs2.0),
                             offset: offset as i32,
                         }
                     }

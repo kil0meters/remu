@@ -18,27 +18,27 @@ pub struct Reg(pub u8);
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct FReg(pub u8);
 
-impl<T> Index<Reg> for [T] {
-    type Output = T;
+impl Index<Reg> for [u64] {
+    type Output = u64;
     fn index(&self, index: Reg) -> &Self::Output {
         &self[index.0 as usize]
     }
 }
 
-impl<T> IndexMut<Reg> for [T] {
+impl IndexMut<Reg> for [u64] {
     fn index_mut(&mut self, index: Reg) -> &mut Self::Output {
         &mut self[index.0 as usize]
     }
 }
 
-impl<T> Index<FReg> for [T] {
-    type Output = T;
+impl Index<FReg> for [f64] {
+    type Output = f64;
     fn index(&self, index: FReg) -> &Self::Output {
         &self[index.0 as usize]
     }
 }
 
-impl<T> IndexMut<FReg> for [T] {
+impl IndexMut<FReg> for [f64] {
     fn index_mut(&mut self, index: FReg) -> &mut Self::Output {
         &mut self[index.0 as usize]
     }
@@ -238,15 +238,17 @@ impl Emulator {
     fn syscall(&mut self, id: u64) {
         let arg = self.x[A0];
 
+        eprintln!("Executing syscall id={id:?}");
+
         let sc: Syscall = FromPrimitive::from_u64(id).unwrap();
 
         // self.print_registers();
         eprintln!("Executing syscall {sc:?}");
 
-        let mut s = String::new();
-        std::io::stdin().read_line(&mut s).ok();
+        // let mut s = String::new();
+        // std::io::stdin().read_line(&mut s).ok();
 
-        if self.pc == 0x10544 {
+        if self.pc == 0x10544 || self.pc == 0x1065e || self.pc == 0x10420 {
             panic!();
         }
 
@@ -257,6 +259,11 @@ impl Emulator {
             }
 
             Syscall::Write => {
+                assert!(self.x[A0] <= 2);
+
+                let ptr = self.x[A1];
+                let len = self.x[A2];
+
                 log::debug!(
                     "Writing to file={}, addr={:x}, nbytes={}",
                     self.x[A0],
@@ -264,13 +271,10 @@ impl Emulator {
                     self.x[A2]
                 );
 
-                let addr = self.x[A1];
+                let s = self.memory.read_string_n(ptr, len);
+                println!("{s}");
 
-                for i in 0..8 {
-                    print!("\"{}\" ", self.memory.load_u8(addr + i));
-                }
-
-                println!();
+                self.x[A0] = len;
             }
 
             Syscall::Writev => {
@@ -296,10 +300,10 @@ impl Emulator {
                 let bufsize = self.x[A3];
 
                 let s = self.memory.read_string(addr);
-                println!(
-                    "READLINKAT: {:?} into buffer at 0x{:x}, size={}",
-                    s, buf_addr, bufsize
-                );
+                // println!(
+                //     "READLINKAT: {:?} into buffer at 0x{:x}, size={}",
+                //     s, buf_addr, bufsize
+                // );
 
                 if s == "/proc/self/exe" {
                     self.memory.write_string_n(b"/prog\0", buf_addr, bufsize);
@@ -353,9 +357,7 @@ impl Emulator {
             }
 
             Syscall::Brk => {
-                println!("brk_addr_before={:x}", self.memory.heap_pointer);
                 self.x[A0] = self.memory.brk(arg);
-                println!("brk_addr_after={:x}", self.memory.heap_pointer);
             }
 
             Syscall::Mmap => {
@@ -381,6 +383,12 @@ impl Emulator {
 
                 self.x[A0] = buflen;
             }
+            Syscall::Newfstatat => {
+                self.x[A0] = 0;
+            }
+            Syscall::SchedYield => {
+                self.x[A0] = 0;
+            }
         }
     }
 
@@ -388,7 +396,7 @@ impl Emulator {
         let inst_data = self.memory.load_u32(self.pc);
         let (inst, incr) = Inst::decode(inst_data);
 
-        println!("{:3} {:05x} {}", self.fuel_counter, self.pc, inst);
+        log::debug!("{:3} {:05x} {}", self.fuel_counter, self.pc, inst);
         // if self.fuel_counter >= 5100 {
         //     self.print_registers();
         //     let mut s = String::new();

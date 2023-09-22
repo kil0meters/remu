@@ -278,7 +278,6 @@ impl Memory {
 
     pub fn write_string_n(&mut self, s: &[u8], addr: u64, len: u64) {
         for i in 0..(len.min(s.len() as u64)) {
-            println!("Writing to: {:x}", addr + i);
             self.store_u8(addr + i, s[i as usize]);
         }
     }

@@ -383,6 +383,9 @@ impl Emulator {
             Inst::Or { rd, rs1, rs2 } => {
                 self.x[rd] = self.x[rs1] | self.x[rs2];
             }
+            Inst::Ori { rd, rs1, imm } => {
+                self.x[rd] = self.x[rs1] | imm;
+            }
             Inst::Xor { rd, rs1, rs2 } => {
                 self.x[rd] = self.x[rs1] ^ self.x[rs2];
             }
@@ -420,6 +423,20 @@ impl Emulator {
                     self.pc = self.pc.wrapping_add(offset as u64).wrapping_sub(incr);
                 }
             }
+            Inst::Sltu { rd, rs1, rs2 } => {
+                if self.x[rs1] < self.x[rs2] {
+                    self.x[rd] = 1;
+                } else {
+                    self.x[rd] = 0;
+                }
+            }
+            Inst::Sltiu { rd, rs1, imm } => {
+                if self.x[rs1] < imm {
+                    self.x[rd] = 1;
+                } else {
+                    self.x[rd] = 0;
+                }
+            }
             Inst::Bge { rs1, rs2, offset } => {
                 if (self.x[rs1] as i64) >= self.x[rs2] as i64 {
                     self.pc = self.pc.wrapping_add(offset as u64).wrapping_sub(incr);
@@ -439,6 +456,20 @@ impl Emulator {
             }
             Inst::Remu { rd, rs1, rs2 } => {
                 self.x[rd] = self.x[rs1] % self.x[rs2];
+            }
+            Inst::Amoswapw { rd, rs1, rs2 } => {
+                self.x[rd] = self.memory.load_u32(self.x[rs1] as u32 as u64) as i32 as u64;
+                let tmp = self.x[rs2] as i32 as u64;
+                self.x[rs2] = self.x[rd];
+                self.x[rd] = tmp;
+                self.memory.store_u32(self.x[rs1], self.x[rd] as u32);
+            }
+            Inst::Amoswapd { rd, rs1, rs2 } => {
+                self.x[rd] = self.memory.load_u64(self.x[rs1]);
+                let tmp = self.x[rs2];
+                self.x[rs2] = self.x[rd];
+                self.x[rd] = tmp;
+                self.memory.store_u64(self.x[rs1], self.x[rd]);
             }
         }
 

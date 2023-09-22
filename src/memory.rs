@@ -32,42 +32,6 @@ impl MemoryRange {
     }
 }
 
-struct Stack {
-    data: Vec<u8>,
-}
-
-impl Stack {
-    fn in_range(&self, index: u64) -> bool {
-        if index > STACK_START {
-            return false;
-        }
-
-        let stack_idx = STACK_START - index;
-        if stack_idx < self.data.len() as u64 {
-            return true;
-        } else {
-            return false;
-        }
-    }
-
-    fn read_u8(&self, index: u64) -> u8 {
-        let stack_idx = STACK_START - index;
-        self.data[stack_idx as usize]
-    }
-
-    fn write_u8(&mut self, index: u64, data: u8) -> bool {
-        if index > STACK_START {
-            return false;
-        }
-
-        let stack_idx = STACK_START - index;
-        self.data.resize(stack_idx as usize, 0);
-        self.data[stack_idx as usize] = data;
-
-        return true;
-    }
-}
-
 pub struct Memory {
     ranges: Box<[MemoryRange]>,
     pub stack: Vec<u8>,

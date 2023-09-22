@@ -34,6 +34,7 @@ pub enum Inst {
     Slliw { rd: Reg, rs1: Reg, shamt: u32 },
     Srli { rd: Reg, rs1: Reg, shamt: u64 },
     Or { rd: Reg, rs1: Reg, rs2: Reg },
+    Ori { rd: Reg, rs1: Reg, imm: u64 },
     Xor { rd: Reg, rs1: Reg, rs2: Reg },
     Xori { rd: Reg, rs1: Reg, imm: u64 },
 
@@ -52,6 +53,12 @@ pub enum Inst {
     Mul { rd: Reg, rs1: Reg, rs2: Reg },
     Remu { rd: Reg, rs1: Reg, rs2: Reg },
     Srliw { rd: Reg, rs1: Reg, shamt: u32 },
+    Sltu { rd: Reg, rs1: Reg, rs2: Reg },
+    Sltiu { rd: Reg, rs1: Reg, imm: u64 },
+
+    // ATOMICS
+    Amoswapw { rd: Reg, rs1: Reg, rs2: Reg },
+    Amoswapd { rd: Reg, rs1: Reg, rs2: Reg },
 }
 
 impl Display for Inst {
@@ -82,6 +89,7 @@ impl Display for Inst {
             Inst::Srli { rd, rs1, shamt } => write!(f, "srli  {rd}, {rs1}, {shamt}"),
             Inst::Srliw { rd, rs1, shamt } => write!(f, "srliw {rd}, {rs1}, {shamt}"),
             Inst::Or { rd, rs1, rs2 } => write!(f, "or    {rd}, {rs1}, {rs2}"),
+            Inst::Ori { rd, rs1, imm } => write!(f, "ori   {rd}, {rs1}, {imm}"),
             Inst::Xor { rd, rs1, rs2 } => write!(f, "xor   {rd}, {rs1}, {rs2}"),
             Inst::Xori { rd, rs1, imm } => write!(f, "xori  {rd}, {rs1}, {imm}"),
             Inst::Auipc { rd, imm } => write!(f, "auipc {rd}, 0x{:x}", imm >> 12),
@@ -96,6 +104,10 @@ impl Display for Inst {
             Inst::Divu { rd, rs1, rs2 } => write!(f, "divu  {rd}, {rs1}, {rs2}"),
             Inst::Mul { rd, rs1, rs2 } => write!(f, "mul   {rd}, {rs1}, {rs2}"),
             Inst::Remu { rd, rs1, rs2 } => write!(f, "remu  {rd}, {rs1}, {rs2}"),
+            Inst::Amoswapw { rd, rs1, rs2 } => write!(f, "amoswapw {rd}, {rs1}, {rs2}"),
+            Inst::Amoswapd { rd, rs1, rs2 } => write!(f, "amoswapd {rd}, {rs1}, {rs2}"),
+            Inst::Sltu { rd, rs1, rs2 } => write!(f, "sltu {rd}, {rs1}, {rs2}"),
+            Inst::Sltiu { rd, rs1, imm } => write!(f, "sltiu {rd}, {rs1}, {imm}"),
         }
     }
 }
@@ -116,6 +128,7 @@ impl Inst {
         let rs1 = Reg(((inst >> 15) & 0b11111) as u8);
         let rs2 = Reg(((inst >> 20) & 0b11111) as u8);
         let funct3 = (inst >> 12) & 0b111;
+        let funct5 = (inst >> 27) & 0b11111;
         let funct7 = (inst >> 25) & 0b1111111;
 
         match opcode {
@@ -141,15 +154,17 @@ impl Inst {
                         let shamt = ((inst >> 20) & 0b11111) as u64;
                         Inst::Slli { rd, rs1, shamt }
                     }
+                    0b011 => Inst::Sltiu { rd, rs1, imm },
                     0b100 => Inst::Xori { rd, rs1, imm },
                     0b101 => {
                         let shamt = ((inst >> 20) & 0b11111) as u64;
                         Inst::Srli { rd, rs1, shamt }
                     }
+                    0b110 => Inst::Ori { rd, rs1, imm },
                     0b111 => Inst::Andi { rd, rs1, imm },
-                    _ => {
-                        Inst::Error(format!("unimplemented: b{opcode:b} funct3={funct3:b}").into())
-                    }
+                    _ => Inst::Error(
+                        format!("unimplemented: {opcode:07b} funct3={funct3:03b}").into(),
+                    ),
                 }
             }
 
@@ -198,13 +213,19 @@ impl Inst {
                     0b0000001 => Inst::Mul { rd, rs1, rs2 },
                     _ => panic!("Invalid instruction"),
                 },
+                0b011 => match funct7 {
+                    0b0000000 => Inst::Sltu { rd, rs1, rs2 },
+                    _ => panic!("Trick or treat!"),
+                },
                 0b101 => match funct7 {
                     0b0000001 => Inst::Divu { rd, rs1, rs2 },
                     _ => panic!("Boojookieland"),
                 },
+
                 0b111 => match funct7 {
+                    0b0000000 => Inst::And { rd, rs1, rs2 },
                     0b0000001 => Inst::Remu { rd, rs1, rs2 },
-                    _ => panic!("Zoinks!"),
+                    _ => Inst::Error(format!("Zoinks!").into()),
                 },
                 0b110 => match funct7 {
                     0b0000000 => Inst::Or { rd, rs1, rs2 },
@@ -222,6 +243,25 @@ impl Inst {
                 0b0000000 => Inst::Addw { rd, rs1, rs2 },
                 0b0100000 => Inst::Subw { rd, rs1, rs2 },
                 _ => panic!("opcode={:07b} unimplemented", opcode),
+            },
+
+            0b0101111 => match funct3 {
+                // ATOMICS, we don't actually do much to support these since the emulator is strictly single threaded.
+                0b010 => match funct5 {
+                    0b00001 => Inst::Amoswapw { rd, rs1, rs2 },
+                    0b00010 => Inst::Lw { rd, rs1, offset: 0 },
+                    0b00011 => Inst::Sw {
+                        rs2,
+                        rs1,
+                        offset: 0,
+                    },
+                    _ => panic!(),
+                },
+                0b011 => match funct5 {
+                    0b00001 => Inst::Amoswapd { rd, rs1, rs2 },
+                    _ => panic!(),
+                },
+                _ => panic!(),
             },
 
             // Branches
@@ -582,6 +622,12 @@ impl Inst {
                         // C.ADD - Add
                         else if imm == 1 && rs1 != Reg(0) && rs2 != Reg(0) {
                             Inst::Add { rd: rs1, rs1, rs2 }
+                        } else if imm == 1 && rs1 != Reg(0) && rs2 == Reg(0) {
+                            Inst::Jalr {
+                                rd: Reg(1),
+                                rs1,
+                                offset: 0,
+                            }
                         } else {
                             Inst::Error(
                                 format!("compressed instruction `{inst:016b}` not implemented.")

@@ -1,3 +1,6 @@
+// initially taken from this inaccurate blog post:
+// https://jborza.com/post/2021-05-11-riscv-linux-syscalls/
+// then some edits made
 pub const IO_SETUP: u64 = 0;
 pub const IO_DESTROY: u64 = 1;
 pub const IO_SUBMIT: u64 = 2;
@@ -117,7 +120,7 @@ pub const TIMER_GETOVERRUN: u64 = 109;
 pub const TIMER_SETTIME: u64 = 409;
 pub const TIMER_DELETE: u64 = 111;
 pub const CLOCK_SETTIME: u64 = 404;
-pub const CLOCK_GETTIME: u64 = 403;
+pub const CLOCK_GETTIME: u64 = 113;
 pub const CLOCK_GETRES: u64 = 406;
 pub const CLOCK_NANOSLEEP: u64 = 407;
 pub const SYSLOG: u64 = 116;

@@ -4,15 +4,16 @@ use std::{
 };
 
 use crate::{
+    auxvec::{AuxPair, Auxv, RANDOM_BYTES},
     instruction::Inst,
     memory::Memory,
     syscalls::{
-        self, BRK, EXIT, EXIT_GROUP, FACCESSAT, MMAP, PRLIMIT64, READLINKAT, SET_ROBUST_LIST,
-        SET_TID_ADDRESS, WRITE,
+        self, BRK, CLOCK_GETTIME, EXIT, EXIT_GROUP, FACCESSAT, GETRANDOM, MMAP, PRLIMIT64,
+        READLINKAT, SET_ROBUST_LIST, SET_TID_ADDRESS, WRITE,
     },
 };
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct Reg(pub u8);
 
 impl<T> Index<Reg> for [T] {
@@ -71,6 +72,8 @@ impl Display for Reg {
 }
 
 pub const SP: Reg = Reg(2);
+pub const S0: Reg = Reg(8);
+pub const S1: Reg = Reg(9);
 pub const A0: Reg = Reg(10);
 pub const A1: Reg = Reg(11);
 pub const A2: Reg = Reg(12);
@@ -79,8 +82,19 @@ pub const A4: Reg = Reg(14);
 pub const A5: Reg = Reg(15);
 pub const A6: Reg = Reg(16);
 pub const A7: Reg = Reg(17);
+pub const S2: Reg = Reg(18);
+pub const S3: Reg = Reg(19);
+pub const S4: Reg = Reg(20);
+pub const S5: Reg = Reg(21);
+pub const S6: Reg = Reg(22);
+pub const S7: Reg = Reg(23);
+pub const S8: Reg = Reg(24);
+pub const S9: Reg = Reg(25);
+pub const S10: Reg = Reg(26);
+pub const S11: Reg = Reg(27);
 
-pub const STACK_START: u64 = 0x8000000000000000;
+pub const STACK_START: u64 = 0x7fffffffffffffff;
+pub const USER_STACK_OFFSET: u64 = 201;
 
 pub struct Emulator {
     pc: u64,
@@ -106,11 +120,57 @@ impl Emulator {
             performance_counter: 0,
         };
 
-        // STACK_START is actually inaccurate since it's actually the start of the kernel space memory.
-        // So we subtract 8 to get the actual first valid memory address.
-        em.x[SP] = STACK_START - 256;
+        em.x[SP] = STACK_START;
+
+        em.init_auxv_stack();
 
         em
+    }
+
+    // https://github.com/torvalds/linux/blob/master/fs/binfmt_elf.c#L175
+    // https://github.com/lattera/glibc/blob/895ef79e04a953cac1493863bcae29ad85657ee1/elf/dl-support.c#L228
+    fn init_auxv_stack(&mut self) {
+        self.x[SP] -= RANDOM_BYTES;
+
+        let at_random_addr = self.x[SP];
+
+        // initialize random bytes to 0..16
+        for i in 0..16 {
+            self.memory.store_u8(at_random_addr + i, i as u8);
+        }
+
+        let program_name = b"/prog\0";
+        self.x[SP] -= 8; // for alignment
+        let program_name_addr = self.x[SP];
+        self.memory.write_string_n(b"/prog\0", program_name_addr, 8);
+
+        // argc
+        self.x[SP] -= 4;
+        self.memory.store_u32(self.x[SP], 1); // one argument
+
+        // argv
+        self.x[SP] -= 8; // argv[0]
+        self.memory.store_u64(self.x[SP], program_name_addr);
+
+        // envp
+        self.x[SP] -= 8;
+
+        // minimal auxv
+        let aux_values = [
+            AuxPair(Auxv::Random, at_random_addr),
+            AuxPair(Auxv::Null, 0),
+        ];
+
+        for AuxPair(key, val) in aux_values.into_iter() {
+            self.x[SP] -= 16;
+            log::debug!("Writing {:?}={} at 0x{:x}", key, val, self.x[SP]);
+            // self.memory.store_u64(self.x[SP], key as u64);
+            self.memory.store_u64(self.x[SP], key as u64);
+            self.memory.store_u64(self.x[SP] + 8, val);
+        }
+
+        // padding or smthn
+        self.x[SP] -= 8;
     }
 
     // emulates linux syscalls
@@ -139,6 +199,28 @@ impl Emulator {
 
                 println!();
             }
+
+            READLINKAT => {
+                // let dirfd = self.x[A0];
+                let addr = self.x[A1];
+                let buf_addr = self.x[A2];
+                let bufsize = self.x[A3];
+
+                let s = self.memory.read_string(addr);
+                println!(
+                    "READLINKAT: {:?} into buffer at 0x{:x}, size={}",
+                    s, buf_addr, bufsize
+                );
+
+                if s == "/proc/self/exe" {
+                    self.memory.write_string_n(b"/prog\0", buf_addr, bufsize);
+                } else {
+                    panic!("Arbitrary file reading is not supported... YAHHH!");
+                }
+
+                self.x[A0] = 0;
+            }
+
             EXIT => {
                 self.exit_code = Some(arg);
             }
@@ -148,11 +230,15 @@ impl Emulator {
             }
 
             SET_TID_ADDRESS => {
-                self.x[A0] = (-1i64) as u64;
+                self.x[A0] = 0;
             }
 
             SET_ROBUST_LIST => {
-                self.x[A0] = (-1i64) as u64;
+                self.x[A0] = 0;
+            }
+
+            CLOCK_GETTIME => {
+                // noop
             }
 
             BRK => {
@@ -165,6 +251,20 @@ impl Emulator {
                 self.x[A0] = self.memory.mmap(self.x[A1]);
             }
 
+            PRLIMIT64 => {
+                self.x[A0] = 0;
+            }
+
+            GETRANDOM => {
+                let buf = self.x[A0];
+                let buflen = self.x[A1];
+
+                // we want this emulator to be deterministic
+                for i in buf..(buf + buflen) {
+                    self.memory.store_u8(i, 0);
+                }
+            }
+
             _ => {
                 unimplemented!("syscall {id} not implemented.");
             }
@@ -175,13 +275,11 @@ impl Emulator {
         let inst_data = self.memory.load_u32(self.pc);
         let (inst, incr) = Inst::decode(inst_data);
 
-        // // if self.pc >= 0x23c74 && self.pc <= 0x23d00 { // _dl_aux_init
-        // if self.pc >= 0x23d02 && self.pc <= 0x24390 {
-        //     let mut s = String::new();
-        //     std::io::stdin().read_line(&mut s).ok();
-        // }
+        println!("{:3} {:05x} {}", self.fuel_counter, self.pc, inst);
+        self.print_registers();
+        // let mut s = String::new();
+        // std::io::stdin().read_line(&mut s).ok();
 
-        // self.print_registers();
         self.execute(inst, incr as u64);
 
         self.fuel_counter += 1;
@@ -195,19 +293,17 @@ impl Emulator {
     }
 
     pub fn print_registers(&self) {
-        println!("stack: {:x?}", self.memory.stack);
-        println!("heap_end: {:x?}", self.memory.heap_pointer);
-        println!("dynamic data: {:x?}", self.memory.mmap_regions);
-        println!("fuel consumed: {}", self.fuel_counter);
+        // println!("stack: {:x?}", self.memory.stack);
+        // println!("heap_end: {:x?}", self.memory.heap_pointer);
+        // println!("dynamic data: {:x?}", self.memory.mmap_regions);
+        // println!("fuel consumed: {}", self.fuel_counter);
         for i in 0..32 {
             let reg = Reg(i);
-            println!("x{i} ({}):\t\t{:x}", reg, self.x[reg]);
+            eprintln!("x{i} ({}):\t{:16x}", reg, self.x[reg]);
         }
     }
 
     fn execute(&mut self, inst: Inst, incr: u64) {
-        log::debug!("{:05x} {}", self.pc, inst);
-
         match inst {
             Inst::Fence => {} // noop currently, to do with concurrency I think
             Inst::Ecall => {
@@ -218,10 +314,11 @@ impl Emulator {
                 panic!("{e}");
             }
             Inst::Lui { rd, imm } => {
-                self.x[rd] = imm as u64;
+                self.x[rd] = imm;
             }
             Inst::Ld { rd, rs1, offset } => {
                 let addr = self.x[rs1].wrapping_add(offset as u64);
+
                 self.x[rd] = self.memory.load_u64(addr);
             }
             Inst::Lw { rd, rs1, offset } => {
@@ -238,6 +335,7 @@ impl Emulator {
             }
             Inst::Sd { rs1, rs2, offset } => {
                 let addr = self.x[rs1].wrapping_add(offset as u64);
+
                 self.memory.store_u64(addr, self.x[rs2]);
             }
             Inst::Sw { rs1, rs2, offset } => {
@@ -279,11 +377,17 @@ impl Emulator {
             Inst::Srli { rd, rs1, shamt } => {
                 self.x[rd] = self.x[rs1] >> shamt;
             }
+            Inst::Srliw { rd, rs1, shamt } => {
+                self.x[rd] = ((self.x[rs1] as u32) >> shamt) as u64;
+            }
             Inst::Or { rd, rs1, rs2 } => {
                 self.x[rd] = self.x[rs1] | self.x[rs2];
             }
             Inst::Xor { rd, rs1, rs2 } => {
                 self.x[rd] = self.x[rs1] ^ self.x[rs2];
+            }
+            Inst::Xori { rd, rs1, imm } => {
+                self.x[rd] = self.x[rs1] ^ imm;
             }
             Inst::Auipc { rd, imm } => {
                 self.x[rd] = self.pc.wrapping_add(imm);
@@ -325,6 +429,16 @@ impl Emulator {
                 if self.x[rs1] >= self.x[rs2] {
                     self.pc = self.pc.wrapping_add(offset as u64).wrapping_sub(incr);
                 }
+            }
+            // TODO: Divide by zero semantics are NOT correct
+            Inst::Divu { rd, rs1, rs2 } => {
+                self.x[rd] = self.x[rs1] / self.x[rs2];
+            }
+            Inst::Mul { rd, rs1, rs2 } => {
+                self.x[rd] = (self.x[rs1] as i64 / self.x[rs2] as i64) as u64;
+            }
+            Inst::Remu { rd, rs1, rs2 } => {
+                self.x[rd] = self.x[rs1] % self.x[rs2];
             }
         }
 

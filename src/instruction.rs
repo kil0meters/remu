@@ -2,12 +2,13 @@ use std::fmt::Display;
 
 use crate::emulator::{Reg, SP};
 
+#[derive(Debug, PartialEq, Eq)]
 pub enum Inst {
     // MISC.
     Fence,
     Ecall,
     Error(Box<str>), // not a risc v instruction but useful for control flow here
-    Lui { rd: Reg, imm: u32 },
+    Lui { rd: Reg, imm: u64 },
 
     // LOADS/STORES
     Ld { rd: Reg, rs1: Reg, offset: i32 },
@@ -24,6 +25,7 @@ pub enum Inst {
     Addw { rd: Reg, rs1: Reg, rs2: Reg },
     Addi { rd: Reg, rs1: Reg, imm: u64 },
     Addiw { rd: Reg, rs1: Reg, imm: u32 },
+    Divu { rd: Reg, rs1: Reg, rs2: Reg },
     And { rd: Reg, rs1: Reg, rs2: Reg },
     Andi { rd: Reg, rs1: Reg, imm: u64 },
     Sub { rd: Reg, rs1: Reg, rs2: Reg },
@@ -33,6 +35,7 @@ pub enum Inst {
     Srli { rd: Reg, rs1: Reg, shamt: u64 },
     Or { rd: Reg, rs1: Reg, rs2: Reg },
     Xor { rd: Reg, rs1: Reg, rs2: Reg },
+    Xori { rd: Reg, rs1: Reg, imm: u64 },
 
     // JUMPING
     Auipc { rd: Reg, imm: u64 },
@@ -46,6 +49,9 @@ pub enum Inst {
     Bltu { rs1: Reg, rs2: Reg, offset: i32 },
     Bge { rs1: Reg, rs2: Reg, offset: i32 },
     Bgeu { rs1: Reg, rs2: Reg, offset: i32 },
+    Mul { rd: Reg, rs1: Reg, rs2: Reg },
+    Remu { rd: Reg, rs1: Reg, rs2: Reg },
+    Srliw { rd: Reg, rs1: Reg, shamt: u32 },
 }
 
 impl Display for Inst {
@@ -54,7 +60,7 @@ impl Display for Inst {
             Inst::Fence => write!(f, "fence"),
             Inst::Ecall => write!(f, "ecall"),
             Inst::Error(ref e) => write!(f, "error: {e}"),
-            Inst::Lui { rd, imm } => write!(f, "lui   {}, 0x{:x}", rd, imm << 12),
+            Inst::Lui { rd, imm } => write!(f, "lui   {}, {:x}", rd, imm >> 12),
             Inst::Ld { rd, rs1, offset } => write!(f, "ld    {}, {}({})", rd, offset, rs1),
             Inst::Lw { rd, rs1, offset } => write!(f, "lw    {}, {}({})", rd, offset, rs1),
             Inst::Lhu { rd, rs1, offset } => write!(f, "lhu   {}, {}({})", rd, offset, rs1),
@@ -74,8 +80,10 @@ impl Display for Inst {
             Inst::Slli { rd, rs1, shamt } => write!(f, "slli  {rd}, {rs1}, {shamt}"),
             Inst::Slliw { rd, rs1, shamt } => write!(f, "slliw {rd}, {rs1}, {shamt}"),
             Inst::Srli { rd, rs1, shamt } => write!(f, "srli  {rd}, {rs1}, {shamt}"),
+            Inst::Srliw { rd, rs1, shamt } => write!(f, "srliw {rd}, {rs1}, {shamt}"),
             Inst::Or { rd, rs1, rs2 } => write!(f, "or    {rd}, {rs1}, {rs2}"),
             Inst::Xor { rd, rs1, rs2 } => write!(f, "xor   {rd}, {rs1}, {rs2}"),
+            Inst::Xori { rd, rs1, imm } => write!(f, "xori  {rd}, {rs1}, {imm}"),
             Inst::Auipc { rd, imm } => write!(f, "auipc {rd}, 0x{:x}", imm >> 12),
             Inst::Jal { rd, offset } => write!(f, "jal   {rd}, {offset:x}"),
             Inst::Jalr { rd, rs1, offset } => write!(f, "jalr  {rd}, {offset}({rs1})"),
@@ -85,6 +93,9 @@ impl Display for Inst {
             Inst::Bltu { rs1, rs2, offset } => write!(f, "bltu  {rs1}, {rs2}, {}", offset),
             Inst::Bge { rs1, rs2, offset } => write!(f, "bge   {rs1}, {rs2}, {}", offset),
             Inst::Bgeu { rs1, rs2, offset } => write!(f, "bgeu  {rs1}, {rs2}, {}", offset),
+            Inst::Divu { rd, rs1, rs2 } => write!(f, "divu  {rd}, {rs1}, {rs2}"),
+            Inst::Mul { rd, rs1, rs2 } => write!(f, "mul   {rd}, {rs1}, {rs2}"),
+            Inst::Remu { rd, rs1, rs2 } => write!(f, "remu  {rd}, {rs1}, {rs2}"),
         }
     }
 }
@@ -105,6 +116,7 @@ impl Inst {
         let rs1 = Reg(((inst >> 15) & 0b11111) as u8);
         let rs2 = Reg(((inst >> 20) & 0b11111) as u8);
         let funct3 = (inst >> 12) & 0b111;
+        let funct7 = (inst >> 25) & 0b1111111;
 
         match opcode {
             0b0000011 => {
@@ -115,7 +127,9 @@ impl Inst {
                     0b011 => Inst::Ld { rd, rs1, offset },
                     0b100 => Inst::Lbu { rd, rs1, offset },
                     0b101 => Inst::Lhu { rd, rs1, offset },
-                    _ => Inst::Error(format!("unimplemented: {opcode:b} funct3={funct3:b}").into()),
+                    _ => {
+                        Inst::Error(format!("unimplemented: a{opcode:b} funct3={funct3:b}").into())
+                    }
                 }
             }
             0b0001111 => Inst::Fence,
@@ -127,8 +141,15 @@ impl Inst {
                         let shamt = ((inst >> 20) & 0b11111) as u64;
                         Inst::Slli { rd, rs1, shamt }
                     }
+                    0b100 => Inst::Xori { rd, rs1, imm },
+                    0b101 => {
+                        let shamt = ((inst >> 20) & 0b11111) as u64;
+                        Inst::Srli { rd, rs1, shamt }
+                    }
                     0b111 => Inst::Andi { rd, rs1, imm },
-                    _ => Inst::Error(format!("unimplemented: {opcode:b} funct3={funct3:b}").into()),
+                    _ => {
+                        Inst::Error(format!("unimplemented: b{opcode:b} funct3={funct3:b}").into())
+                    }
                 }
             }
 
@@ -144,8 +165,14 @@ impl Inst {
                     Inst::Addiw { rd, rs1, imm }
                 }
                 0b001 => {
+                    assert_eq!(funct7, 0);
                     let shamt = ((inst >> 20) & 0b111111) as u32;
                     Inst::Slliw { rd, rs1, shamt }
+                }
+                0b101 => {
+                    assert_eq!(funct7, 0); // TODO: handle SRAIW
+                    let shamt = ((inst >> 20) & 0b111111) as u32;
+                    Inst::Srliw { rd, rs1, shamt }
                 }
                 _ => Inst::Error(format!("unimplemented: {opcode:b} funct3={funct3:b}").into()),
             },
@@ -164,12 +191,38 @@ impl Inst {
                 }
             }
 
-            0b0110011 => Inst::Add { rd, rs1, rs2 },
+            0b0110011 => match funct3 {
+                0b000 => match funct7 {
+                    0b0000000 => Inst::Add { rd, rs1, rs2 },
+                    0b0100000 => Inst::Sub { rd, rs1, rs2 },
+                    0b0000001 => Inst::Mul { rd, rs1, rs2 },
+                    _ => panic!("Invalid instruction"),
+                },
+                0b101 => match funct7 {
+                    0b0000001 => Inst::Divu { rd, rs1, rs2 },
+                    _ => panic!("Boojookieland"),
+                },
+                0b111 => match funct7 {
+                    0b0000001 => Inst::Remu { rd, rs1, rs2 },
+                    _ => panic!("Zoinks!"),
+                },
+                0b110 => match funct7 {
+                    0b0000000 => Inst::Or { rd, rs1, rs2 },
+                    _ => panic!("Orange you glad you're not this instruction."),
+                },
+                _ => Inst::Error(format!("Invalid for thing").into()),
+            },
             0b0110111 => {
-                let imm = inst & 0xFFFFF000;
+                let imm = (inst & 0xFFFFF000) as i32 as u64;
 
                 Inst::Lui { rd, imm }
             }
+
+            0b0111011 => match funct7 {
+                0b0000000 => Inst::Addw { rd, rs1, rs2 },
+                0b0100000 => Inst::Subw { rd, rs1, rs2 },
+                _ => panic!("opcode={:07b} unimplemented", opcode),
+            },
 
             // Branches
             0b1100011 => {
@@ -246,7 +299,8 @@ impl Inst {
                         // C.LD
                         let rd = Reg((((inst >> 2) & 0b111) + 8) as u8);
                         let rs1 = Reg((((inst >> 7) & 0b111) + 8) as u8);
-                        let offset = ((inst >> 7) & 0b111000) | (((inst >> 5) & 0b111) << 6);
+                        let offset = (inst & 0b1100000) << 1 // imm[7:6]
+                                   | (inst & 0b1110000000000) >> 7; // imm[5:3]
 
                         Inst::Ld {
                             rd,
@@ -345,7 +399,7 @@ impl Inst {
 
                             Inst::Lui {
                                 rd,
-                                imm: imm as u32,
+                                imm: imm as u64,
                             }
                         }
                     }
@@ -459,9 +513,33 @@ impl Inst {
             0b10 => {
                 match funct3 {
                     0b000 => {
-                        let shamt = ((((inst >> 12) & 0b1) << 5) | ((inst >> 2) & 0b1111)) as u64;
                         let rd = Reg(((inst >> 7) & 0b11111) as u8);
-                        Inst::Slli { rd, rs1: rd, shamt }
+                        let shamt = (inst & 0b1000000000000) >> 7 // imm[5]
+                                  | (inst & 0b1111100) >> 2; // imm[4:0]
+
+                        Inst::Slli {
+                            rd,
+                            rs1: rd,
+                            shamt: shamt as u64,
+                        }
+                    }
+                    0b010 => {
+                        let rd = Reg(((inst >> 7) & 0b11111) as u8);
+                        let imm = (inst & 0b1100) << 4 // imm[7:6]
+                                | (inst & 0b1110000) >> 2 // imm[4:2]
+                                | (inst & 0b1000000000000) >> 7; // imm[5]
+
+                        // C.LWSP
+                        if rd != Reg(0) {
+                            // C.LDSP
+                            Inst::Lw {
+                                rd,
+                                rs1: SP,
+                                offset: imm as i32,
+                            }
+                        } else {
+                            panic!("Invalid instruction");
+                        }
                     }
                     0b011 => {
                         let rd = Reg(((inst >> 7) & 0b11111) as u8);
@@ -529,5 +607,114 @@ impl Inst {
             0b11 => Inst::Error("Quadrant 11 should not exist".into()),
             _ => unreachable!(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::emulator::*;
+
+    #[test_log::test]
+    fn cload_decoding() {
+        let (inst, _) = Inst::decode(0x0000639c);
+        assert_eq!(
+            inst,
+            Inst::Ld {
+                rd: A5,
+                rs1: A5,
+                offset: 0
+            }
+        );
+
+        // C.LDSP
+        let (inst, _) = Inst::decode(0x000046ca);
+        assert_eq!(
+            inst,
+            Inst::Lw {
+                rd: A3,
+                rs1: SP,
+                offset: 144
+            }
+        );
+    }
+
+    #[test_log::test]
+    fn xori_decoding() {
+        let (inst, _) = Inst::decode(0xfff64613);
+        assert_eq!(
+            inst,
+            Inst::Xori {
+                rd: A2,
+                rs1: A2,
+                imm: -1i64 as u64
+            },
+        );
+    }
+
+    #[test_log::test]
+    fn srliw_decoding() {
+        let (inst, _) = Inst::decode(0x0087d49b);
+        assert_eq!(
+            inst,
+            Inst::Srliw {
+                rd: S1,
+                rs1: A5,
+                shamt: 8,
+            }
+        );
+    }
+
+    #[test_log::test]
+    fn add_sub_decoding() {
+        let (inst, _) = Inst::decode(0x00c58533);
+        assert_eq!(
+            inst,
+            Inst::Add {
+                rd: A0,
+                rs1: A1,
+                rs2: A2
+            }
+        );
+
+        let (inst, _) = Inst::decode(0x40c58533);
+        assert_eq!(
+            inst,
+            Inst::Sub {
+                rd: A0,
+                rs1: A1,
+                rs2: A2
+            }
+        );
+
+        let (inst, _) = Inst::decode(0x02c5d533);
+        assert_eq!(
+            inst,
+            Inst::Divu {
+                rd: A0,
+                rs1: A1,
+                rs2: A2
+            }
+        );
+
+        let (inst, _) = Inst::decode(0x02c58533);
+        assert_eq!(
+            inst,
+            Inst::Mul {
+                rd: A0,
+                rs1: A1,
+                rs2: A2
+            }
+        );
+
+        let (inst, _) = Inst::decode(0x02c5f533);
+        assert_eq!(
+            inst,
+            Inst::Remu {
+                rd: A0,
+                rs1: A1,
+                rs2: A2
+            }
+        );
     }
 }

@@ -3,7 +3,7 @@ use std::collections::VecDeque;
 use elf::{abi::PT_LOAD, endian::EndianParse, ElfBytes};
 use log::{debug, warn};
 
-use crate::emulator::STACK_START;
+use crate::emulator::{STACK_START, USER_STACK_OFFSET};
 
 #[derive(Debug)]
 pub struct MemoryRange {
@@ -29,6 +29,42 @@ impl MemoryRange {
         } else {
             false
         }
+    }
+}
+
+struct Stack {
+    data: Vec<u8>,
+}
+
+impl Stack {
+    fn in_range(&self, index: u64) -> bool {
+        if index > STACK_START {
+            return false;
+        }
+
+        let stack_idx = STACK_START - index;
+        if stack_idx < self.data.len() as u64 {
+            return true;
+        } else {
+            return false;
+        }
+    }
+
+    fn read_u8(&self, index: u64) -> u8 {
+        let stack_idx = STACK_START - index;
+        self.data[stack_idx as usize]
+    }
+
+    fn write_u8(&mut self, index: u64, data: u8) -> bool {
+        if index > STACK_START {
+            return false;
+        }
+
+        let stack_idx = STACK_START - index;
+        self.data.resize(stack_idx as usize, 0);
+        self.data[stack_idx as usize] = data;
+
+        return true;
     }
 }
 
@@ -142,6 +178,9 @@ impl Memory {
             data: vec![0; size as usize].into_boxed_slice(),
         };
 
+        println!("MMAP REGION AT:  {}", region.start);
+        println!("MMAP REGION END: {}", region.end);
+
         self.mmap_regions.push_back(region);
 
         region_start
@@ -207,7 +246,7 @@ impl Memory {
 
             self.stack[stack_idx as usize]
         } else {
-            panic!("Attempted to store to address not mapped to memoery: {idx:x}");
+            panic!("Attempted to load to address not mapped to memoery: {idx:x}");
         }
     }
 
@@ -271,5 +310,31 @@ impl Memory {
         } else {
             panic!("Attempted to store to address not mapped to memoery: {idx:x}");
         }
+    }
+
+    pub fn write_string_n(&mut self, s: &[u8], addr: u64, len: u64) {
+        for i in 0..(len.min(s.len() as u64)) {
+            println!("Writing to: {:x}", addr + i);
+            self.store_u8(addr + i, s[i as usize]);
+        }
+    }
+
+    // super unsafe, probably requires null termination
+    pub fn read_string(&mut self, mut addr: u64) -> String {
+        let mut data = Vec::new();
+        // read bytes until we get null
+        loop {
+            let c = self.load_u8(addr);
+            addr += 1;
+
+            if c == 0 {
+                break;
+            }
+
+            data.push(c);
+        }
+
+        let s = String::from_utf8_lossy(&data);
+        s.into()
     }
 }

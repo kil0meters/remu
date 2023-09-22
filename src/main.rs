@@ -1,4 +1,4 @@
-#![forbid(unsafe_code)]
+// #![forbid(unsafe_code)]
 
 use anyhow::Result;
 use clap::Parser;
@@ -6,6 +6,7 @@ use elf::{endian::AnyEndian, ElfBytes};
 use emulator::Emulator;
 use memory::Memory;
 
+mod auxvec;
 mod emulator;
 mod instruction;
 mod memory;

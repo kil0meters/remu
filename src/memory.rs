@@ -3,7 +3,7 @@ use std::collections::VecDeque;
 use elf::{abi::PT_LOAD, endian::EndianParse, ElfBytes};
 use log::{debug, warn};
 
-use crate::emulator::{STACK_START, USER_STACK_OFFSET};
+use crate::emulator::STACK_START;
 
 #[derive(Debug)]
 pub struct MemoryRange {
@@ -91,6 +91,7 @@ impl Memory {
         }
     }
 
+    #[cfg(test)]
     pub fn from_raw(data: &[u8]) -> Self {
         let data = MemoryRange {
             start: 0,
@@ -150,16 +151,16 @@ impl Memory {
         region_start
     }
 
-    pub fn munmap(&mut self, ptr: u64) -> u64 {
-        let index = self.mmap_regions.iter().position(|elm| elm.start == ptr);
-
-        if let Some(index) = index {
-            self.mmap_regions.swap_remove_back(index);
-            return 0;
-        } else {
-            return -1 as i64 as u64;
-        }
-    }
+    // pub fn munmap(&mut self, ptr: u64) -> u64 {
+    //     let index = self.mmap_regions.iter().position(|elm| elm.start == ptr);
+    //
+    //     if let Some(index) = index {
+    //         self.mmap_regions.swap_remove_back(index);
+    //         return 0;
+    //     } else {
+    //         return -1 as i64 as u64;
+    //     }
+    // }
 
     pub fn load_u64(&mut self, index: u64) -> u64 {
         return (self.load_u32(index) as u64) | ((self.load_u32(index + 4) as u64) << 32);

@@ -151,11 +151,10 @@ pub const S10: Reg = Reg(26);
 pub const S11: Reg = Reg(27);
 
 pub const STACK_START: u64 = 0x7fffffffffffffff;
-pub const USER_STACK_OFFSET: u64 = 201;
 
 pub struct Emulator {
     pc: u64,
-    fscr: u64,
+    // fscr: u64,
     x: [u64; 32],
     f: [f64; 32],
     memory: Memory,
@@ -163,22 +162,22 @@ pub struct Emulator {
     exit_code: Option<u64>,
 
     /// The number of instructions executed over the lifecycle of the emulator.
-    fuel_counter: u64,
-    /// Similar to fuel_counter, but also takes into account intruction level parallelism and cache misses.
-    performance_counter: u64,
+    pub fuel_counter: u64,
+    // Similar to fuel_counter, but also takes into account intruction level parallelism and cache misses.
+    // performance_counter: u64,
 }
 
 impl Emulator {
     pub fn new(entry: u64, memory: Memory) -> Self {
         let mut em = Self {
             pc: entry,
-            fscr: 0,
+            // fscr: 0,
             x: [0; 32],
             f: [0.0; 32],
             memory,
             exit_code: None,
             fuel_counter: 0,
-            performance_counter: 0,
+            // performance_counter: 0,
         };
 
         em.x[SP] = STACK_START;
@@ -200,7 +199,6 @@ impl Emulator {
             self.memory.store_u8(at_random_addr + i, i as u8);
         }
 
-        let program_name = b"/prog\0";
         self.x[SP] -= 8; // for alignment
         let program_name_addr = self.x[SP];
         self.memory.write_string_n(b"/prog\0", program_name_addr, 8);
@@ -238,19 +236,10 @@ impl Emulator {
     fn syscall(&mut self, id: u64) {
         let arg = self.x[A0];
 
-        eprintln!("Executing syscall id={id:?}");
-
-        let sc: Syscall = FromPrimitive::from_u64(id).unwrap();
+        let sc: Syscall = FromPrimitive::from_u64(id).expect(&format!("Unknown syscall: {id}"));
 
         // self.print_registers();
-        eprintln!("Executing syscall {sc:?}");
-
-        // let mut s = String::new();
-        // std::io::stdin().read_line(&mut s).ok();
-
-        if self.pc == 0x10544 || self.pc == 0x1065e || self.pc == 0x10420 {
-            panic!();
-        }
+        log::debug!("Executing syscall {sc:?}");
 
         match sc {
             Syscall::Faccessat => {
@@ -272,7 +261,7 @@ impl Emulator {
                 );
 
                 let s = self.memory.read_string_n(ptr, len);
-                println!("{s}");
+                print!("{s}");
 
                 self.x[A0] = len;
             }
@@ -289,7 +278,7 @@ impl Emulator {
                     let len = self.memory.load_u64(iovecs + 8 + (i * 16));
 
                     let s = self.memory.read_string_n(ptr, len);
-                    println!("{s}");
+                    print!("{s}");
                 }
             }
 
@@ -409,6 +398,7 @@ impl Emulator {
         self.exit_code
     }
 
+    #[cfg(test)]
     fn execute_raw(&mut self, inst_data: u32) {
         let (inst, incr) = Inst::decode(inst_data);
         self.execute(inst, incr as u64);
@@ -416,10 +406,6 @@ impl Emulator {
     }
 
     pub fn print_registers(&self) {
-        // println!("stack: {:x?}", self.memory.stack);
-        // println!("heap_end: {:x?}", self.memory.heap_pointer);
-        // println!("dynamic data: {:x?}", self.memory.mmap_regions);
-        // println!("fuel consumed: {}", self.fuel_counter);
         for i in 0..32 {
             let reg = Reg(i);
             eprintln!("x{i} ({}):\t{:16x}", reg, self.x[reg]);
@@ -563,6 +549,13 @@ impl Emulator {
             }
             Inst::Sltu { rd, rs1, rs2 } => {
                 if self.x[rs1] < self.x[rs2] {
+                    self.x[rd] = 1;
+                } else {
+                    self.x[rd] = 0;
+                }
+            }
+            Inst::Slti { rd, rs1, imm } => {
+                if (self.x[rs1] as i64) < (imm as i64) {
                     self.x[rd] = 1;
                 } else {
                     self.x[rd] = 0;

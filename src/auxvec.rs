@@ -2,6 +2,7 @@
 // https://android.googlesource.com/platform/bionic/+/android-7.1.1_r11/libc/kernel/uapi/linux/auxvec.h
 
 #[derive(Debug, Clone, Copy)]
+#[allow(unused)]
 pub enum Auxv {
     Null = 0,
     Ignore = 1,

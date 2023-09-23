@@ -58,6 +58,7 @@ pub enum Inst {
     Mul { rd: Reg, rs1: Reg, rs2: Reg },
     Remu { rd: Reg, rs1: Reg, rs2: Reg },
     Sltu { rd: Reg, rs1: Reg, rs2: Reg },
+    Slti { rd: Reg, rs1: Reg, imm: u64 },
     Sltiu { rd: Reg, rs1: Reg, imm: u64 },
 
     // ATOMICS
@@ -120,6 +121,7 @@ impl Display for Inst {
             Inst::Amoswapw { rd, rs1, rs2 } => write!(f, "amoswap.w {rd}, {rs1}, {rs2}"),
             Inst::Amoswapd { rd, rs1, rs2 } => write!(f, "amoswap.d {rd}, {rs1}, {rs2}"),
             Inst::Sltu { rd, rs1, rs2 } => write!(f, "sltu {rd}, {rs1}, {rs2}"),
+            Inst::Slti { rd, rs1, imm } => write!(f, "slti {rd}, {rs1}, {imm}"),
             Inst::Sltiu { rd, rs1, imm } => write!(f, "sltiu {rd}, {rs1}, {imm}"),
             Inst::Lrw { rd, rs1 } => write!(f, "lr.w  {rd}, ({rs1})"),
             Inst::Scw { rd, rs1, rs2 } => write!(f, "sc.w  {rd}, {rs2},({rs1})"),
@@ -170,6 +172,7 @@ impl Inst {
                         let shamt = (inst >> 20) & 0b11111;
                         Inst::Slli { rd, rs1, shamt }
                     }
+                    0b010 => Inst::Slti { rd, rs1, imm },
                     0b011 => Inst::Sltiu { rd, rs1, imm },
                     0b100 => Inst::Xori { rd, rs1, imm },
                     0b101 => {
@@ -251,6 +254,10 @@ impl Inst {
                 0b011 => match funct7 {
                     0b0000000 => Inst::Sltu { rd, rs1, rs2 },
                     _ => panic!("Trick or treat!"),
+                },
+                0b100 => match funct7 {
+                    0b0000000 => Inst::Xor { rd, rs1, rs2 },
+                    _ => panic!("Wheatmaxing"),
                 },
                 0b101 => match funct7 {
                     0b0000000 => Inst::Srl { rd, rs1, rs2 },

@@ -52,12 +52,14 @@ fn main() -> Result<()> {
 
     loop {
         if let Some(exit_code) = emulator.fetch_and_execute() {
+            println!("------------------------------");
             println!("Program exited with code {exit_code}");
+            println!("Fuel consumed: {}", emulator.fuel_counter);
             break;
         }
     }
 
-    emulator.print_registers();
+    // emulator.print_registers();
 
     Ok(())
 }

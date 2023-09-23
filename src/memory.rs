@@ -17,18 +17,9 @@ impl MemoryRange {
         idx >= self.start && idx < self.end
     }
 
-    fn fetch_byte(&self, idx: u64) -> u8 {
-        self.data[(idx - self.start) as usize]
-    }
-
-    fn try_store_byte(&mut self, idx: u64, data: u8) -> bool {
-        if self.in_range(idx) {
-            self.data[(idx - self.start) as usize] = data;
-
-            true
-        } else {
-            false
-        }
+    // SAFETY: valid if in range
+    unsafe fn fetch_byte(&mut self, idx: u64) -> *mut u8 {
+        self.data.as_mut_ptr().add((idx - self.start) as usize)
     }
 }
 
@@ -83,7 +74,7 @@ impl Memory {
 
         Memory {
             ranges: ranges.into_boxed_slice(),
-            stack: Vec::new(),
+            stack: vec![0; 512],
             heap: Vec::new(),
 
             heap_pointer: data_end,
@@ -101,7 +92,7 @@ impl Memory {
         let data_end = data.end;
         Memory {
             ranges: [data].into(),
-            stack: Vec::new(),
+            stack: vec![0; 512],
             heap: Vec::new(),
             heap_pointer: data_end,
             mmap_regions: VecDeque::new(),
@@ -163,32 +154,27 @@ impl Memory {
     // }
 
     pub fn load_u64(&mut self, index: u64) -> u64 {
-        return (self.load_u32(index) as u64) | ((self.load_u32(index + 4) as u64) << 32);
+        unsafe { self.data_ptr(index).cast::<u64>().read_unaligned() }
     }
 
     pub fn load_u32(&mut self, index: u64) -> u32 {
-        return (self.load_u8(index) as u32)
-            | ((self.load_u8(index + 1) as u32) << 8)
-            | ((self.load_u8(index + 2) as u32) << 16)
-            | ((self.load_u8(index + 3) as u32) << 24);
+        unsafe { self.data_ptr(index).cast::<u32>().read_unaligned() }
     }
 
     pub fn load_u16(&mut self, index: u64) -> u16 {
-        return (self.load_u8(index) as u16) //.
-            | ((self.load_u8(index + 1) as u16) << 8);
+        unsafe { self.data_ptr(index).cast::<u16>().read_unaligned() }
     }
 
-    /// Has to be mutable because there's a chance loading a byte resizes the stack apparently?
-    pub fn load_u8(&mut self, idx: u64) -> u8 {
+    unsafe fn data_ptr(&mut self, idx: u64) -> *mut u8 {
         // try loading from executable mapped memory ranges
-        for range in self.ranges.iter() {
+        for range in self.ranges.iter_mut() {
             if range.in_range(idx) {
                 return range.fetch_byte(idx);
             }
         }
 
         // try loading from dynamic mmap regions
-        for range in self.mmap_regions.iter() {
+        for range in self.mmap_regions.iter_mut() {
             if range.in_range(idx) {
                 return range.fetch_byte(idx);
             }
@@ -198,83 +184,43 @@ impl Memory {
         if idx >= heap_start && idx < self.heap_pointer {
             let heap_idx = idx - heap_start;
 
-            self.heap[heap_idx as usize]
+            self.heap.as_mut_ptr().add(heap_idx as usize)
         } else if idx <= STACK_START {
-            let stack_idx = STACK_START - idx;
+            let mut stack_end = STACK_START - self.stack.len() as u64;
 
-            // TODO: It's possible that this extends the stack too much. IDK really
-            if (stack_idx as usize) >= self.stack.len() {
-                if stack_idx as usize - self.stack.len() < 0xffffff {
-                    self.stack.resize(stack_idx as usize + 1, 0);
-                }
+            while stack_end > idx {
+                // resize and shift
+                // manual vec implementation here
+                self.stack.extend_from_within(0..self.stack.len());
+
+                stack_end = STACK_START - self.stack.len() as u64;
             }
 
-            self.stack[stack_idx as usize]
+            self.stack.as_mut_ptr().add((idx - stack_end) as usize)
         } else {
             panic!("Attempted to load to address not mapped to memoery: {idx:x}");
         }
     }
 
-    pub fn store_u64(&mut self, index: u64, data: u64) {
-        self.store_u32(index, data as u32);
-        self.store_u32(index + 4, (data >> 32) as u32);
+    /// Has to be mutable because there's a chance loading a byte resizes the stack apparently?
+    pub fn load_u8(&mut self, idx: u64) -> u8 {
+        unsafe { *self.data_ptr(idx) }
     }
 
-    pub fn store_u32(&mut self, index: u64, data: u32) {
-        self.store_u8(index + 3, (data >> 24) as u8);
-        self.store_u8(index + 2, (data >> 16) as u8);
-        self.store_u8(index + 1, (data >> 8) as u8);
-        self.store_u8(index + 0, (data) as u8);
+    pub fn store_u64(&mut self, idx: u64, data: u64) {
+        unsafe { self.data_ptr(idx).cast::<u64>().write_unaligned(data) }
     }
 
-    pub fn store_u16(&mut self, index: u64, data: u16) {
-        self.store_u8(index + 1, (data >> 8) as u8);
-        self.store_u8(index + 0, (data) as u8);
+    pub fn store_u32(&mut self, idx: u64, data: u32) {
+        unsafe { self.data_ptr(idx).cast::<u32>().write_unaligned(data) }
+    }
+
+    pub fn store_u16(&mut self, idx: u64, data: u16) {
+        unsafe { self.data_ptr(idx).cast::<u16>().write_unaligned(data) }
     }
 
     pub fn store_u8(&mut self, idx: u64, data: u8) {
-        for range in self.ranges.iter_mut() {
-            if range.try_store_byte(idx, data) {
-                return;
-            }
-        }
-
-        for range in self.mmap_regions.iter_mut() {
-            if range.in_range(idx) {
-                if range.try_store_byte(idx, data) {
-                    return;
-                }
-            }
-        }
-
-        let heap_start = self.heap_pointer - self.heap.len() as u64;
-        if idx >= heap_start && idx < self.heap_pointer {
-            // debug!(
-            //     "store byte: {:x} - ({:x} - {:x})",
-            //     idx,
-            //     self.heap_pointer,
-            //     self.heap.len()
-            // );
-
-            let heap_idx = idx - heap_start;
-
-            self.heap[heap_idx as usize] = data;
-        } else if idx <= STACK_START {
-            let stack_idx = STACK_START - idx;
-
-            // TODO: It's possible that this extends the stack too much. IDK really
-            if (stack_idx as usize) >= self.stack.len() {
-                if stack_idx as usize - self.stack.len() < 0xffffff {
-                    self.stack.resize(stack_idx as usize + 1, 0);
-                } else {
-                    return;
-                }
-            }
-
-            self.stack[stack_idx as usize] = data;
-        } else {
-            panic!("Attempted to store to address not mapped to memoery: {idx:x}");
-        }
+        unsafe { self.data_ptr(idx).write_unaligned(data) }
     }
 
     pub fn write_string_n(&mut self, s: &[u8], addr: u64, len: u64) {

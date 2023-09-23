@@ -1,5 +1,6 @@
 use std::{
     fmt::Display,
+    io::Write,
     ops::{Index, IndexMut},
 };
 

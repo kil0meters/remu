@@ -257,7 +257,7 @@ impl Emulator {
 
         for AuxPair(key, val) in aux_values.into_iter() {
             self.x[SP] -= 16;
-            log::debug!("Writing {:?}={} at 0x{:x}", key, val, self.x[SP]);
+            // log::debug!("Writing {:?}={} at 0x{:x}", key, val, self.x[SP]);
             // self.memory.store_u64(self.x[SP], key as u64);
             self.memory.store_u64(self.x[SP], key as u64);
             self.memory.store_u64(self.x[SP] + 8, val);
@@ -462,7 +462,7 @@ impl Emulator {
                 panic!("{e}");
             }
             Inst::Lui { rd, imm } => {
-                self.x[rd] = imm;
+                self.x[rd] = imm as u64;
             }
             Inst::Ld { rd, rs1, offset } => {
                 let addr = self.x[rs1].wrapping_add(offset as u64);
@@ -517,7 +517,7 @@ impl Emulator {
             Inst::Addw { rd, rs1, rs2 } => {
                 self.x[rd] = (self.x[rs1] as i32).wrapping_add(self.x[rs2] as i32) as u64;
             }
-            Inst::Addi { rd, rs1, imm } => self.x[rd] = self.x[rs1].wrapping_add(imm),
+            Inst::Addi { rd, rs1, imm } => self.x[rd] = self.x[rs1].wrapping_add(imm as u64),
             Inst::Addiw { rd, rs1, imm } => {
                 self.x[rd] = (self.x[rs1] as i32).wrapping_add(imm as i32) as u64;
             }
@@ -525,7 +525,7 @@ impl Emulator {
                 self.x[rd] = self.x[rs1] & self.x[rs2];
             }
             Inst::Andi { rd, rs1, imm } => {
-                self.x[rd] = self.x[rs1] & imm;
+                self.x[rd] = self.x[rs1] & (imm as u64);
             }
             Inst::Sub { rd, rs1, rs2 } => self.x[rd] = self.x[rs1].wrapping_sub(self.x[rs2]),
             Inst::Subw { rd, rs1, rs2 } => {
@@ -571,24 +571,24 @@ impl Emulator {
                 self.x[rd] = self.x[rs1] | self.x[rs2];
             }
             Inst::Ori { rd, rs1, imm } => {
-                self.x[rd] = self.x[rs1] | imm;
+                self.x[rd] = self.x[rs1] | imm as u64;
             }
             Inst::Xor { rd, rs1, rs2 } => {
                 self.x[rd] = self.x[rs1] ^ self.x[rs2];
             }
             Inst::Xori { rd, rs1, imm } => {
-                self.x[rd] = self.x[rs1] ^ imm;
+                self.x[rd] = self.x[rs1] ^ imm as u64;
             }
             Inst::Auipc { rd, imm } => {
-                self.x[rd] = self.pc.wrapping_add(imm);
+                self.x[rd] = self.pc.wrapping_add(imm as i64 as u64);
             }
             Inst::Jal { rd, offset } => {
                 self.x[rd] = self.pc + incr as u64;
-                self.pc = self.pc.wrapping_add(offset).wrapping_sub(incr);
+                self.pc = self.pc.wrapping_add(offset as u64).wrapping_sub(incr);
             }
             Inst::Jalr { rd, rs1, offset } => {
                 self.x[rd] = self.pc + incr as u64;
-                self.pc = self.x[rs1].wrapping_add(offset).wrapping_sub(incr);
+                self.pc = self.x[rs1].wrapping_add(offset as u64).wrapping_sub(incr);
             }
             Inst::Beq { rs1, rs2, offset } => {
                 if self.x[rs1] == self.x[rs2] {
@@ -632,7 +632,7 @@ impl Emulator {
                 }
             }
             Inst::Sltiu { rd, rs1, imm } => {
-                if self.x[rs1] < imm {
+                if self.x[rs1] < imm as u64 {
                     self.x[rd] = 1;
                 } else {
                     self.x[rd] = 0;
@@ -738,7 +738,7 @@ impl Emulator {
 mod tests {
     use super::*;
 
-    #[test_log::test]
+    #[test]
     fn lui() {
         let memory = Memory::from_raw(&[]);
         let mut emulator = Emulator::new(0, memory);
@@ -752,7 +752,7 @@ mod tests {
         assert_eq!(emulator.x[A1], 40960);
     }
 
-    #[test_log::test]
+    #[test]
     fn loads() {
         let memory = Memory::from_raw(&[
             0x12, 0x23, 0x34, 0x56, 0x78, 0x9a, 0xbc, 0xde, //.
@@ -777,7 +777,7 @@ mod tests {
         assert_eq!(emulator.x[A1], 0x00000000000000ef);
     }
 
-    // #[test_log::test]
+    // #[test]
     // fn stores() {
     //     let memory = Memory::from_raw(&[
     //         0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, //.
@@ -805,7 +805,7 @@ mod tests {
     //     assert_ne!(emulator.x[A0], emulator.x[A1]);
     // }
 
-    #[test_log::test]
+    #[test]
     fn sp_relative() {
         let memory = Memory::from_raw(&[]);
         let mut emulator = Emulator::new(0, memory);

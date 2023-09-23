@@ -1,6 +1,10 @@
 use std::collections::VecDeque;
 
-use elf::{abi::PT_LOAD, endian::EndianParse, ElfBytes};
+use elf::{
+    abi::{DT_SYMBOLIC, PT_DYNAMIC, PT_LOAD},
+    endian::EndianParse,
+    ElfBytes,
+};
 use log::{debug, warn};
 
 use crate::emulator::STACK_START;
@@ -43,6 +47,19 @@ impl Memory {
         let segments = elf.segments().unwrap();
         let mut data_end = 0;
 
+        // load dynamic libraries, if they exist
+        // https://blog.k3170makan.com/2018/11/introduction-to-elf-format-part-vii.html
+
+        // if let Some(dynamic) = elf.dynamic().unwrap() {
+        //     for x in dynamic {
+        //         if x.d_tag == DT_SYMBOLIC {
+        //         }
+        //         log::info!("{:?}", x);
+        //     }
+        //
+        //     panic!();
+        // }
+
         for segment in segments {
             match segment.p_type {
                 PT_LOAD => {
@@ -66,6 +83,9 @@ impl Memory {
                     data_end = data_end.max(range.end);
                     ranges.push(range);
                 }
+                // PT_DYNAMIC => {
+                //     log::error!("{:?}", segment);
+                // }
                 _ => {
                     warn!("Unknown p_type: {segment:?}");
                 }

@@ -9,7 +9,7 @@ pub enum Inst {
     Ecall,
     Ebreak,
     Error(u32),
-    Lui { rd: Reg, imm: u64 },
+    Lui { rd: Reg, imm: i32 },
 
     // LOADS/STORES
     Ld { rd: Reg, rs1: Reg, offset: i32 },
@@ -26,14 +26,14 @@ pub enum Inst {
     // MATH OPERATIONS
     Add { rd: Reg, rs1: Reg, rs2: Reg },
     Addw { rd: Reg, rs1: Reg, rs2: Reg },
-    Addi { rd: Reg, rs1: Reg, imm: u64 },
+    Addi { rd: Reg, rs1: Reg, imm: i32 },
     Addiw { rd: Reg, rs1: Reg, imm: u32 },
     Div { rd: Reg, rs1: Reg, rs2: Reg },
     Divw { rd: Reg, rs1: Reg, rs2: Reg },
     Divu { rd: Reg, rs1: Reg, rs2: Reg },
     Divuw { rd: Reg, rs1: Reg, rs2: Reg },
     And { rd: Reg, rs1: Reg, rs2: Reg },
-    Andi { rd: Reg, rs1: Reg, imm: u64 },
+    Andi { rd: Reg, rs1: Reg, imm: i32 },
     Sub { rd: Reg, rs1: Reg, rs2: Reg },
     Subw { rd: Reg, rs1: Reg, rs2: Reg },
     Sll { rd: Reg, rs1: Reg, rs2: Reg },
@@ -49,14 +49,14 @@ pub enum Inst {
     Srai { rd: Reg, rs1: Reg, shamt: u32 },
     Sraiw { rd: Reg, rs1: Reg, shamt: u32 },
     Or { rd: Reg, rs1: Reg, rs2: Reg },
-    Ori { rd: Reg, rs1: Reg, imm: u64 },
+    Ori { rd: Reg, rs1: Reg, imm: i32 },
     Xor { rd: Reg, rs1: Reg, rs2: Reg },
-    Xori { rd: Reg, rs1: Reg, imm: u64 },
+    Xori { rd: Reg, rs1: Reg, imm: i32 },
 
     // JUMPING
-    Auipc { rd: Reg, imm: u64 },
-    Jal { rd: Reg, offset: u64 },
-    Jalr { rd: Reg, rs1: Reg, offset: u64 },
+    Auipc { rd: Reg, imm: i32 },
+    Jal { rd: Reg, offset: i32 },
+    Jalr { rd: Reg, rs1: Reg, offset: i32 },
 
     // BRANCHES
     Beq { rs1: Reg, rs2: Reg, offset: i32 },
@@ -72,8 +72,8 @@ pub enum Inst {
     Remuw { rd: Reg, rs1: Reg, rs2: Reg },
     Slt { rd: Reg, rs1: Reg, rs2: Reg },
     Sltu { rd: Reg, rs1: Reg, rs2: Reg },
-    Slti { rd: Reg, rs1: Reg, imm: u64 },
-    Sltiu { rd: Reg, rs1: Reg, imm: u64 },
+    Slti { rd: Reg, rs1: Reg, imm: i32 },
+    Sltiu { rd: Reg, rs1: Reg, imm: u32 },
 
     // ATOMICS
     Amoswapw { rd: Reg, rs1: Reg, rs2: Reg },
@@ -135,7 +135,7 @@ impl Display for Inst {
             Inst::Ori { rd, rs1, imm } => write!(f, "ori   {rd}, {rs1}, {imm}"),
             Inst::Xor { rd, rs1, rs2 } => write!(f, "xor   {rd}, {rs1}, {rs2}"),
             Inst::Xori { rd, rs1, imm } => write!(f, "xori  {rd}, {rs1}, {imm}"),
-            Inst::Auipc { rd, imm } => write!(f, "auipc {rd}, 0x{:x}", imm >> 12),
+            Inst::Auipc { rd, imm } => write!(f, "auipc {rd}, 0x{:x}", imm as u64 >> 12),
             Inst::Jal { rd, offset } => write!(f, "jal   {rd}, {offset:x}"),
             Inst::Jalr { rd, rs1, offset } => write!(f, "jalr  {rd}, {offset}({rs1})"),
             Inst::Beq { rs1, rs2, offset } => write!(f, "beq   {rs1}, {rs2}, {}", offset),
@@ -220,7 +220,7 @@ impl Inst {
             }
             0b0001111 => Inst::Fence,
             0b0010011 => {
-                let imm = ((inst & 0xFFF00000) as i32 as i64 >> 20) as u64;
+                let imm = (inst & 0xFFF00000) as i32 >> 20;
                 match funct3 {
                     0b000 => Inst::Addi { rd, rs1, imm },
                     0b001 => {
@@ -228,7 +228,11 @@ impl Inst {
                         Inst::Slli { rd, rs1, shamt }
                     }
                     0b010 => Inst::Slti { rd, rs1, imm },
-                    0b011 => Inst::Sltiu { rd, rs1, imm },
+                    0b011 => Inst::Sltiu {
+                        rd,
+                        rs1,
+                        imm: imm as u32,
+                    },
                     0b100 => Inst::Xori { rd, rs1, imm },
                     0b101 => {
                         let shamt = (inst >> 20) & 0b11111;
@@ -242,7 +246,7 @@ impl Inst {
 
             // AUIPC - Add Upper Immediate to PC
             0b0010111 => {
-                let imm = (inst & 0xFFFFF000) as i32 as i64 as u64;
+                let imm = (inst & 0xFFFFF000) as i32;
                 Inst::Auipc { rd, imm }
             }
 
@@ -343,7 +347,7 @@ impl Inst {
                 _ => Inst::Error(inst),
             },
             0b0110111 => {
-                let imm = (inst & 0xFFFFF000) as i32 as u64;
+                let imm = (inst & 0xFFFFF000) as i32;
 
                 Inst::Lui { rd, imm }
             }
@@ -419,12 +423,20 @@ impl Inst {
                 }
             }
 
+            0b1100111 => {
+                let offset = (inst & 0xFFFFF000) as i32 >> 12;
+                match funct3 {
+                    0b000 => Inst::Jalr { rd, rs1, offset },
+                    _ => Inst::Error(inst),
+                }
+            }
+
             0b1101111 => {
                 // imm[20|10:1|11|19:12] = inst[31|30:21|20|19:12]
-                let offset = (((inst & 0x80000000) as i32 as i64 >> 11) as u64) // imm[20]
-                           | (inst & 0xff000) as u64 // imm[19:12]
-                           | ((inst >> 9) & 0x800) as u64 // imm[11]
-                           | ((inst >> 20) & 0x7fe) as u64; // imm[10:1]
+                let offset = ((inst & 0x80000000) as i32 >> 11) // imm[20]
+                           | (inst & 0xff000) as i32 // imm[19:12]
+                           | ((inst >> 9) & 0x800) as i32 // imm[11]
+                           | ((inst >> 20) & 0x7fe) as i32; // imm[10:1]
 
                 Inst::Jal { rd, offset }
             }
@@ -455,7 +467,7 @@ impl Inst {
                         Inst::Addi {
                             rd,
                             rs1: SP,
-                            imm: imm as u64,
+                            imm: imm as i32,
                         }
                     }
                     0b001 => {
@@ -553,7 +565,7 @@ impl Inst {
                         Inst::Addi {
                             rd,
                             rs1: rd,
-                            imm: imm as u64,
+                            imm: imm as i32,
                         }
                     }
                     0b001 => {
@@ -575,7 +587,7 @@ impl Inst {
                         Inst::Addi {
                             rd,
                             rs1: Reg(0),
-                            imm: imm as u64,
+                            imm: imm as i32,
                         }
                     }
                     0b011 => {
@@ -583,11 +595,11 @@ impl Inst {
 
                         if rd == Reg(2) {
                             // C.ADDI16SP
-                            let imm = (((inst & 0b1000000000000) << 3) as i16 >> 6) as u64 // imm[9]
-                                    | ((inst & 0b100) << 3) as u64 // imm[5]
-                                    | ((inst & 0b11000) << 4) as u64 // imm[8:7]
-                                    | ((inst & 0b100000) << 1) as u64 // imm[6]
-                                    | ((inst & 0b1000000) >> 2) as u64; // imm[4]
+                            let imm = (((inst & 0b1000000000000) << 3) as i16 >> 6) as i32 // imm[9]
+                                    | ((inst & 0b100) << 3) as i32 // imm[5]
+                                    | ((inst & 0b11000) << 4) as i32 // imm[8:7]
+                                    | ((inst & 0b100000) << 1) as i32 // imm[6]
+                                    | ((inst & 0b1000000) >> 2) as i32; // imm[4]
 
                             Inst::Addi {
                                 rd: SP,
@@ -599,10 +611,7 @@ impl Inst {
                             let imm = ((((inst & 0b1000000000000) << 3) as i16 as i32) << 2)  // imm[17]
                                     | ((inst as u32 & 0b1111100) << 10) as i32; // imm[16:12]
 
-                            Inst::Lui {
-                                rd,
-                                imm: imm as u64,
-                            }
+                            Inst::Lui { rd, imm }
                         }
                     }
                     0b100 => {
@@ -649,7 +658,7 @@ impl Inst {
                                 Inst::Andi {
                                     rd,
                                     rs1: rd,
-                                    imm: imm as u64,
+                                    imm: imm as i32,
                                 }
                             }
 
@@ -682,7 +691,7 @@ impl Inst {
 
                         Inst::Jal {
                             rd: Reg(0),
-                            offset: imm as i16 as u64,
+                            offset: imm as i16 as i32,
                         }
                     }
                     0b110 => {
@@ -852,7 +861,7 @@ mod tests {
     use super::*;
     use crate::emulator::*;
 
-    #[test_log::test]
+    #[test]
     fn cload_decoding() {
         let (inst, _) = Inst::decode(0x0000639c);
         assert_eq!(
@@ -876,7 +885,7 @@ mod tests {
         );
     }
 
-    #[test_log::test]
+    #[test]
     fn xori_decoding() {
         let (inst, _) = Inst::decode(0xfff64613);
         assert_eq!(
@@ -884,12 +893,12 @@ mod tests {
             Inst::Xori {
                 rd: A2,
                 rs1: A2,
-                imm: -1i64 as u64
+                imm: -1
             },
         );
     }
 
-    #[test_log::test]
+    #[test]
     fn srliw_decoding() {
         let (inst, _) = Inst::decode(0x0087d49b);
         assert_eq!(
@@ -902,7 +911,7 @@ mod tests {
         );
     }
 
-    #[test_log::test]
+    #[test]
     fn add_sub_decoding() {
         let (inst, _) = Inst::decode(0x00c58533);
         assert_eq!(

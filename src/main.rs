@@ -27,7 +27,6 @@ struct Arguments {
 
 fn main() -> Result<()> {
     let args = Arguments::parse();
-
     SimpleLogger::init(args.verbose.log_level_filter(), Config::default())?;
 
     let file_data = std::fs::read(args.file).expect("Could not read file.");
@@ -36,7 +35,7 @@ fn main() -> Result<()> {
 
     match (file.ehdr.class, file.ehdr.e_type, file.ehdr.e_machine) {
         // (64 bit, executable, risc_v arch)
-        (elf::file::Class::ELF64, 0x02, 0xF3) => log::info!("Parsing executable."),
+        (elf::file::Class::ELF64, 0x03 | 0x02, 0xF3) => log::info!("Parsing executable."),
         got => {
             eprintln!(
                 "Error. Invalid executable format. Expects a 64-bit RISC-V Linux binary. Got: {:x?}",

@@ -5,6 +5,7 @@ use clap::Parser;
 use elf::{endian::AnyEndian, ElfBytes};
 use emulator::Emulator;
 use memory::Memory;
+use simplelog::{Config, SimpleLogger};
 
 mod auxvec;
 mod emulator;
@@ -27,11 +28,7 @@ struct Arguments {
 fn main() -> Result<()> {
     let args = Arguments::parse();
 
-    env_logger::Builder::new()
-        .format_timestamp(None)
-        .target(env_logger::Target::Stdout)
-        .filter_level(args.verbose.log_level_filter())
-        .init();
+    SimpleLogger::init(args.verbose.log_level_filter(), Config::default())?;
 
     let file_data = std::fs::read(args.file).expect("Could not read file.");
     let slice = file_data.as_slice();

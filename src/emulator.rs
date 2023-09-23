@@ -205,7 +205,7 @@ impl Emulator {
             let inst_data = self.memory.load_u32(pc);
             let inst_with_incr = Inst::decode(inst_data);
 
-            log::debug!("{pc:07x} {}", inst_with_incr.0);
+            // log::debug!("{pc:07x} {}", inst_with_incr.0);
 
             pc += inst_with_incr.1 as u64;
 
@@ -428,7 +428,7 @@ impl Emulator {
     pub fn fetch_and_execute(&mut self) -> Option<u64> {
         let (inst, incr) = self.fetch();
 
-        // log::debug!("{:3} {:05x} {}", self.fuel_counter, self.pc, inst);
+        log::debug!("{:3} {:05x} {}", self.fuel_counter, self.pc, inst);
 
         self.execute(inst, incr as u64);
 

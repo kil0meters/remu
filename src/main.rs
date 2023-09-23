@@ -17,6 +17,9 @@ mod syscalls;
 struct Arguments {
     file: String,
 
+    #[clap(short, long)]
+    precache: bool,
+
     #[clap(flatten)]
     verbose: clap_verbosity_flag::Verbosity,
 }
@@ -50,6 +53,10 @@ fn main() -> Result<()> {
     let memory = Memory::load_elf(file);
 
     let mut emulator = Emulator::new(file_entry, memory);
+
+    if args.precache {
+        emulator.precache_instructions();
+    }
 
     loop {
         if let Some(exit_code) = emulator.fetch_and_execute() {

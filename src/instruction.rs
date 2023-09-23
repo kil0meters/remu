@@ -2,18 +2,21 @@ use std::fmt::Display;
 
 use crate::emulator::{FReg, Reg, SP};
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub enum Inst {
     // MISC.
     Fence,
     Ecall,
-    Error(Box<str>), // not a risc v instruction but useful for control flow here
+    Ebreak,
+    Error(u32),
     Lui { rd: Reg, imm: u64 },
 
     // LOADS/STORES
     Ld { rd: Reg, rs1: Reg, offset: i32 },
     Lw { rd: Reg, rs1: Reg, offset: i32 },
+    Lwu { rd: Reg, rs1: Reg, offset: i32 },
     Lhu { rd: Reg, rs1: Reg, offset: i32 },
+    Lb { rd: Reg, rs1: Reg, offset: i32 },
     Lbu { rd: Reg, rs1: Reg, offset: i32 },
     Sd { rs1: Reg, rs2: Reg, offset: i32 },
     Sw { rs1: Reg, rs2: Reg, offset: i32 },
@@ -25,17 +28,24 @@ pub enum Inst {
     Addw { rd: Reg, rs1: Reg, rs2: Reg },
     Addi { rd: Reg, rs1: Reg, imm: u64 },
     Addiw { rd: Reg, rs1: Reg, imm: u32 },
+    Div { rd: Reg, rs1: Reg, rs2: Reg },
+    Divw { rd: Reg, rs1: Reg, rs2: Reg },
     Divu { rd: Reg, rs1: Reg, rs2: Reg },
+    Divuw { rd: Reg, rs1: Reg, rs2: Reg },
     And { rd: Reg, rs1: Reg, rs2: Reg },
     Andi { rd: Reg, rs1: Reg, imm: u64 },
     Sub { rd: Reg, rs1: Reg, rs2: Reg },
     Subw { rd: Reg, rs1: Reg, rs2: Reg },
     Sll { rd: Reg, rs1: Reg, rs2: Reg },
+    Sllw { rd: Reg, rs1: Reg, rs2: Reg },
     Slli { rd: Reg, rs1: Reg, shamt: u32 },
     Slliw { rd: Reg, rs1: Reg, shamt: u32 },
     Srl { rd: Reg, rs1: Reg, rs2: Reg },
+    Srlw { rd: Reg, rs1: Reg, rs2: Reg },
     Srli { rd: Reg, rs1: Reg, shamt: u32 },
     Srliw { rd: Reg, rs1: Reg, shamt: u32 },
+    Sra { rd: Reg, rs1: Reg, rs2: Reg },
+    Sraw { rd: Reg, rs1: Reg, rs2: Reg },
     Srai { rd: Reg, rs1: Reg, shamt: u32 },
     Sraiw { rd: Reg, rs1: Reg, shamt: u32 },
     Or { rd: Reg, rs1: Reg, rs2: Reg },
@@ -56,7 +66,11 @@ pub enum Inst {
     Bge { rs1: Reg, rs2: Reg, offset: i32 },
     Bgeu { rs1: Reg, rs2: Reg, offset: i32 },
     Mul { rd: Reg, rs1: Reg, rs2: Reg },
+    Mulhu { rd: Reg, rs1: Reg, rs2: Reg },
+    Remw { rd: Reg, rs1: Reg, rs2: Reg },
     Remu { rd: Reg, rs1: Reg, rs2: Reg },
+    Remuw { rd: Reg, rs1: Reg, rs2: Reg },
+    Slt { rd: Reg, rs1: Reg, rs2: Reg },
     Sltu { rd: Reg, rs1: Reg, rs2: Reg },
     Slti { rd: Reg, rs1: Reg, imm: u64 },
     Sltiu { rd: Reg, rs1: Reg, imm: u64 },
@@ -64,11 +78,19 @@ pub enum Inst {
     // ATOMICS
     Amoswapw { rd: Reg, rs1: Reg, rs2: Reg },
     Amoswapd { rd: Reg, rs1: Reg, rs2: Reg },
+    Amoaddw { rd: Reg, rs1: Reg, rs2: Reg },
+    Amoaddd { rd: Reg, rs1: Reg, rs2: Reg },
+    Amoorw { rd: Reg, rs1: Reg, rs2: Reg },
+    Amomaxuw { rd: Reg, rs1: Reg, rs2: Reg },
+    Amomaxud { rd: Reg, rs1: Reg, rs2: Reg },
     Lrw { rd: Reg, rs1: Reg },
+    Lrd { rd: Reg, rs1: Reg },
     Scw { rd: Reg, rs1: Reg, rs2: Reg },
+    Scd { rd: Reg, rs1: Reg, rs2: Reg },
 
     // FLOATING POINT
     Fsd { rs1: Reg, rs2: FReg, offset: i32 },
+    Fld { rd: FReg, rs1: Reg, offset: i32 },
 }
 
 impl Display for Inst {
@@ -76,11 +98,14 @@ impl Display for Inst {
         match *self {
             Inst::Fence => write!(f, "fence"),
             Inst::Ecall => write!(f, "ecall"),
-            Inst::Error(ref e) => write!(f, "error: {e}"),
+            Inst::Ebreak => write!(f, "break"),
+            Inst::Error(ref e) => write!(f, "error: {e:08x}"),
             Inst::Lui { rd, imm } => write!(f, "lui   {}, {:x}", rd, imm >> 12),
             Inst::Ld { rd, rs1, offset } => write!(f, "ld    {}, {}({})", rd, offset, rs1),
             Inst::Lw { rd, rs1, offset } => write!(f, "lw    {}, {}({})", rd, offset, rs1),
+            Inst::Lwu { rd, rs1, offset } => write!(f, "lwu    {}, {}({})", rd, offset, rs1),
             Inst::Lhu { rd, rs1, offset } => write!(f, "lhu   {}, {}({})", rd, offset, rs1),
+            Inst::Lb { rd, rs1, offset } => write!(f, "lbu   {}, {}({})", rd, offset, rs1),
             Inst::Lbu { rd, rs1, offset } => write!(f, "lbu   {}, {}({})", rd, offset, rs1),
             Inst::Sd { rs1, rs2, offset } => write!(f, "sd    {}, {}({})", rs2, offset, rs1),
             Inst::Sw { rs1, rs2, offset } => write!(f, "sw    {}, {}({})", rs2, offset, rs1),
@@ -95,13 +120,17 @@ impl Display for Inst {
             Inst::Sub { rd, rs1, rs2 } => write!(f, "sub   {rd}, {rs1}, {rs2}"),
             Inst::Subw { rd, rs1, rs2 } => write!(f, "subw  {rd}, {rs1}, {rs2}"),
             Inst::Sll { rd, rs1, rs2 } => write!(f, "sll  {rd}, {rs1}, {rs2}"),
+            Inst::Sllw { rd, rs1, rs2 } => write!(f, "sllw  {rd}, {rs1}, {rs2}"),
             Inst::Slli { rd, rs1, shamt } => write!(f, "slli  {rd}, {rs1}, {shamt}"),
             Inst::Slliw { rd, rs1, shamt } => write!(f, "slliw {rd}, {rs1}, {shamt}"),
             Inst::Srl { rd, rs1, rs2 } => write!(f, "srl  {rd}, {rs1}, {rs2}"),
+            Inst::Srlw { rd, rs1, rs2 } => write!(f, "srl  {rd}, {rs1}, {rs2}"),
             Inst::Srli { rd, rs1, shamt } => write!(f, "srli  {rd}, {rs1}, {shamt}"),
             Inst::Srliw { rd, rs1, shamt } => write!(f, "srliw {rd}, {rs1}, {shamt}"),
+            Inst::Sra { rd, rs1, rs2 } => write!(f, "sra  {rd}, {rs1}, {rs2}"),
+            Inst::Sraw { rd, rs1, rs2 } => write!(f, "sraw {rd}, {rs1}, {rs2}"),
             Inst::Srai { rd, rs1, shamt } => write!(f, "srai  {rd}, {rs1}, {shamt}"),
-            Inst::Sraiw { rd, rs1, shamt } => write!(f, "srai  {rd}, {rs1}, {shamt}"),
+            Inst::Sraiw { rd, rs1, shamt } => write!(f, "sraiw {rd}, {rs1}, {shamt}"),
             Inst::Or { rd, rs1, rs2 } => write!(f, "or    {rd}, {rs1}, {rs2}"),
             Inst::Ori { rd, rs1, imm } => write!(f, "ori   {rd}, {rs1}, {imm}"),
             Inst::Xor { rd, rs1, rs2 } => write!(f, "xor   {rd}, {rs1}, {rs2}"),
@@ -115,17 +144,32 @@ impl Display for Inst {
             Inst::Bltu { rs1, rs2, offset } => write!(f, "bltu  {rs1}, {rs2}, {}", offset),
             Inst::Bge { rs1, rs2, offset } => write!(f, "bge   {rs1}, {rs2}, {}", offset),
             Inst::Bgeu { rs1, rs2, offset } => write!(f, "bgeu  {rs1}, {rs2}, {}", offset),
+            Inst::Div { rd, rs1, rs2 } => write!(f, "div   {rd}, {rs1}, {rs2}"),
+            Inst::Divw { rd, rs1, rs2 } => write!(f, "divw  {rd}, {rs1}, {rs2}"),
             Inst::Divu { rd, rs1, rs2 } => write!(f, "divu  {rd}, {rs1}, {rs2}"),
+            Inst::Divuw { rd, rs1, rs2 } => write!(f, "divuw {rd}, {rs1}, {rs2}"),
             Inst::Mul { rd, rs1, rs2 } => write!(f, "mul   {rd}, {rs1}, {rs2}"),
+            Inst::Mulhu { rd, rs1, rs2 } => write!(f, "mul   {rd}, {rs1}, {rs2}"),
+            Inst::Remw { rd, rs1, rs2 } => write!(f, "remw  {rd}, {rs1}, {rs2}"),
             Inst::Remu { rd, rs1, rs2 } => write!(f, "remu  {rd}, {rs1}, {rs2}"),
+            Inst::Remuw { rd, rs1, rs2 } => write!(f, "remuw  {rd}, {rs1}, {rs2}"),
             Inst::Amoswapw { rd, rs1, rs2 } => write!(f, "amoswap.w {rd}, {rs1}, {rs2}"),
             Inst::Amoswapd { rd, rs1, rs2 } => write!(f, "amoswap.d {rd}, {rs1}, {rs2}"),
-            Inst::Sltu { rd, rs1, rs2 } => write!(f, "sltu {rd}, {rs1}, {rs2}"),
-            Inst::Slti { rd, rs1, imm } => write!(f, "slti {rd}, {rs1}, {imm}"),
+            Inst::Amoaddw { rd, rs1, rs2 } => write!(f, "amoadd.w {rd}, {rs1}, {rs2}"),
+            Inst::Amoaddd { rd, rs1, rs2 } => write!(f, "amoadd.d {rd}, {rs1}, {rs2}"),
+            Inst::Amoorw { rd, rs1, rs2 } => write!(f, "amoor.w {rd}, {rs1}, {rs2}"),
+            Inst::Amomaxuw { rd, rs1, rs2 } => write!(f, "amomaxu.w {rd}, {rs1}, {rs2}"),
+            Inst::Amomaxud { rd, rs1, rs2 } => write!(f, "amomaxu.d {rd}, {rs1}, {rs2}"),
+            Inst::Slt { rd, rs1, rs2 } => write!(f, "slt   {rd}, {rs1}, {rs2}"),
+            Inst::Sltu { rd, rs1, rs2 } => write!(f, "sltu  {rd}, {rs1}, {rs2}"),
+            Inst::Slti { rd, rs1, imm } => write!(f, "slti  {rd}, {rs1}, {imm}"),
             Inst::Sltiu { rd, rs1, imm } => write!(f, "sltiu {rd}, {rs1}, {imm}"),
             Inst::Lrw { rd, rs1 } => write!(f, "lr.w  {rd}, ({rs1})"),
+            Inst::Lrd { rd, rs1 } => write!(f, "lr.d  {rd}, ({rs1})"),
             Inst::Scw { rd, rs1, rs2 } => write!(f, "sc.w  {rd}, {rs2},({rs1})"),
+            Inst::Scd { rd, rs1, rs2 } => write!(f, "sc.d  {rd}, {rs2},({rs1})"),
             Inst::Fsd { rs1, rs2, offset } => write!(f, "fsd   {rs2}, {offset}({rs1})"),
+            Inst::Fld { rs1, rd, offset } => write!(f, "fld   {rd}, {offset}({rs1})"),
         }
     }
 }
@@ -154,13 +198,24 @@ impl Inst {
                 let offset = ((inst & 0xFFF00000) as i32) >> 20;
 
                 match funct3 {
+                    0b000 => Inst::Lb { rd, rs1, offset },
                     0b010 => Inst::Lw { rd, rs1, offset },
                     0b011 => Inst::Ld { rd, rs1, offset },
                     0b100 => Inst::Lbu { rd, rs1, offset },
                     0b101 => Inst::Lhu { rd, rs1, offset },
-                    _ => {
-                        Inst::Error(format!("unimplemented: a{opcode:b} funct3={funct3:b}").into())
-                    }
+                    0b110 => Inst::Lwu { rd, rs1, offset },
+                    _ => Inst::Error(inst),
+                }
+            }
+            0b0000111 => {
+                let offset = (inst & 0xFFF00000) as i32 >> 20;
+                match funct3 {
+                    0b011 => Inst::Fld {
+                        rd: FReg(rd.0),
+                        rs1,
+                        offset,
+                    },
+                    _ => Inst::Error(inst),
                 }
             }
             0b0001111 => Inst::Fence,
@@ -181,9 +236,7 @@ impl Inst {
                     }
                     0b110 => Inst::Ori { rd, rs1, imm },
                     0b111 => Inst::Andi { rd, rs1, imm },
-                    _ => Inst::Error(
-                        format!("unimplemented: {opcode:07b} funct3={funct3:03b}").into(),
-                    ),
+                    _ => Inst::Error(inst),
                 }
             }
 
@@ -198,20 +251,22 @@ impl Inst {
                     let imm = ((inst & 0b11111111111100000000000000000000) as i32 >> 20) as u32;
                     Inst::Addiw { rd, rs1, imm }
                 }
-                0b001 => {
-                    assert_eq!(funct7, 0);
-                    let shamt = ((inst >> 20) & 0b111111) as u32;
-                    Inst::Slliw { rd, rs1, shamt }
-                }
+                0b001 => match funct7 {
+                    0b0000000 => {
+                        let shamt = ((inst >> 20) & 0b111111) as u32;
+                        Inst::Slliw { rd, rs1, shamt }
+                    }
+                    _ => Inst::Error(inst),
+                },
                 0b101 => {
                     let shamt = ((inst >> 20) & 0b111111) as u32;
                     match funct7 {
                         0b0000000 => Inst::Srliw { rd, rs1, shamt },
                         0b0100000 => Inst::Sraiw { rd, rs1, shamt },
-                        _ => todo!(),
+                        _ => Inst::Error(inst),
                     }
                 }
-                _ => Inst::Error(format!("unimplemented: {opcode:b} funct3={funct3:b}").into()),
+                _ => Inst::Error(inst),
             },
 
             // STORE
@@ -224,19 +279,23 @@ impl Inst {
                     0b010 => Inst::Sw { rs1, rs2, offset },
                     0b001 => Inst::Sh { rs1, rs2, offset },
                     0b000 => Inst::Sb { rs1, rs2, offset },
-                    _ => Inst::Error(format!("unimplemented: {opcode:b} funct3={funct3:b}").into()),
+                    _ => Inst::Error(inst),
                 }
             }
 
             0b0100111 => {
-                assert_eq!(funct3, 0b011);
-                let offset = ((inst & 0b11111110000000000000000000000000) as i32) >> 20 // imm[11:5]
-                           | (inst & 0b111110000000) as i32 >> 7; // imm[4:0]
+                match funct3 {
+                    0b011 => {
+                        let offset = ((inst & 0b11111110000000000000000000000000) as i32) >> 20 // imm[11:5]
+                        | (inst & 0b111110000000) as i32 >> 7; // imm[4:0]
 
-                Inst::Fsd {
-                    rs2: FReg(rs2.0),
-                    rs1,
-                    offset,
+                        Inst::Fsd {
+                            rs2: FReg(rs2.0),
+                            rs1,
+                            offset,
+                        }
+                    }
+                    _ => Inst::Error(inst),
                 }
             }
 
@@ -245,36 +304,43 @@ impl Inst {
                     0b0000000 => Inst::Add { rd, rs1, rs2 },
                     0b0100000 => Inst::Sub { rd, rs1, rs2 },
                     0b0000001 => Inst::Mul { rd, rs1, rs2 },
-                    _ => panic!("Invalid instruction"),
+                    _ => Inst::Error(inst),
                 },
                 0b001 => match funct7 {
                     0b0000000 => Inst::Sll { rd, rs1, rs2 },
-                    _ => panic!("Invalid i think"),
+                    _ => Inst::Error(inst),
+                },
+                0b010 => match funct7 {
+                    0b0000000 => Inst::Slt { rd, rs1, rs2 },
+                    _ => Inst::Error(inst),
                 },
                 0b011 => match funct7 {
                     0b0000000 => Inst::Sltu { rd, rs1, rs2 },
-                    _ => panic!("Trick or treat!"),
+                    0b0000001 => Inst::Mulhu { rd, rs1, rs2 },
+                    _ => Inst::Error(inst),
                 },
                 0b100 => match funct7 {
                     0b0000000 => Inst::Xor { rd, rs1, rs2 },
-                    _ => panic!("Wheatmaxing"),
+                    0b0000001 => Inst::Div { rd, rs1, rs2 },
+                    _ => Inst::Error(inst),
                 },
                 0b101 => match funct7 {
                     0b0000000 => Inst::Srl { rd, rs1, rs2 },
                     0b0000001 => Inst::Divu { rd, rs1, rs2 },
-                    _ => panic!("Boojookieland: {funct7:07b}"),
+                    0b0100000 => Inst::Sra { rd, rs1, rs2 },
+                    _ => Inst::Error(inst),
                 },
 
                 0b111 => match funct7 {
                     0b0000000 => Inst::And { rd, rs1, rs2 },
                     0b0000001 => Inst::Remu { rd, rs1, rs2 },
-                    _ => Inst::Error(format!("Zoinks!").into()),
+                    _ => Inst::Error(inst),
                 },
                 0b110 => match funct7 {
                     0b0000000 => Inst::Or { rd, rs1, rs2 },
-                    _ => panic!("Orange you glad you're not this instruction."),
+                    _ => Inst::Error(inst),
                 },
-                _ => Inst::Error(format!("Invalid for thing").into()),
+                _ => Inst::Error(inst),
             },
             0b0110111 => {
                 let imm = (inst & 0xFFFFF000) as i32 as u64;
@@ -282,25 +348,57 @@ impl Inst {
                 Inst::Lui { rd, imm }
             }
 
-            0b0111011 => match funct7 {
-                0b0000000 => Inst::Addw { rd, rs1, rs2 },
-                0b0100000 => Inst::Subw { rd, rs1, rs2 },
-                _ => panic!("opcode={:07b} unimplemented", opcode),
+            0b0111011 => match funct3 {
+                0b000 => match funct7 {
+                    0b0000000 => Inst::Addw { rd, rs1, rs2 },
+                    0b0100000 => Inst::Subw { rd, rs1, rs2 },
+                    _ => Inst::Error(inst),
+                },
+                0b001 => match funct7 {
+                    0b0000000 => Inst::Sllw { rd, rs1, rs2 },
+                    _ => Inst::Error(inst),
+                },
+                0b100 => match funct7 {
+                    0b0000001 => Inst::Divw { rd, rs1, rs2 },
+                    _ => Inst::Error(inst),
+                },
+                0b101 => match funct7 {
+                    0b0000000 => Inst::Srlw { rd, rs1, rs2 },
+                    0b0000001 => Inst::Divuw { rd, rs1, rs2 },
+                    0b0100000 => Inst::Sraw { rd, rs1, rs2 },
+                    _ => Inst::Error(inst),
+                },
+                0b110 => match funct7 {
+                    0b0000001 => Inst::Remw { rd, rs1, rs2 },
+                    _ => Inst::Error(inst),
+                },
+                0b111 => match funct7 {
+                    0b0000001 => Inst::Remuw { rd, rs1, rs2 },
+                    _ => Inst::Error(inst),
+                },
+                _ => Inst::Error(inst),
             },
 
             0b0101111 => match funct3 {
                 // ATOMICS, we don't actually do much to support these since the emulator is strictly single threaded.
                 0b010 => match funct5 {
+                    0b00000 => Inst::Amoaddw { rd, rs1, rs2 },
                     0b00001 => Inst::Amoswapw { rd, rs1, rs2 },
                     0b00010 => Inst::Lrw { rd, rs1 },
                     0b00011 => Inst::Scw { rs2, rs1, rd },
-                    _ => panic!(),
+                    0b01000 => Inst::Amoorw { rs2, rs1, rd },
+                    0b11100 => Inst::Amomaxuw { rs2, rs1, rd },
+                    _ => Inst::Error(inst),
                 },
                 0b011 => match funct5 {
+                    0b00000 => Inst::Amoaddd { rd, rs1, rs2 },
                     0b00001 => Inst::Amoswapd { rd, rs1, rs2 },
-                    _ => panic!(),
+                    0b00010 => Inst::Lrd { rd, rs1 },
+                    0b00011 => Inst::Scd { rs2, rs1, rd },
+                    0b11100 => Inst::Amomaxud { rs2, rs1, rd },
+                    _ => Inst::Error(inst),
                 },
-                _ => panic!(),
+                _ => Inst::Error(inst),
             },
 
             // Branches
@@ -317,7 +415,7 @@ impl Inst {
                     0b101 => Inst::Bge { rs1, rs2, offset },
                     0b110 => Inst::Bltu { rs1, rs2, offset },
                     0b111 => Inst::Bgeu { rs1, rs2, offset },
-                    _ => Inst::Error(format!("unimplemented: {opcode:b} funct3={funct3:b}").into()),
+                    _ => Inst::Error(inst),
                 }
             }
 
@@ -333,7 +431,7 @@ impl Inst {
 
             0b1110011 => Inst::Ecall,
 
-            _ => Inst::Error(format!("unimplemented: {opcode:07b}").into()),
+            _ => Inst::Error(inst),
         }
     }
 
@@ -358,6 +456,21 @@ impl Inst {
                             rd,
                             rs1: SP,
                             imm: imm as u64,
+                        }
+                    }
+                    0b001 => {
+                        // C.FLD
+
+                        // nzuimm
+                        let imm = (inst & 0b1110000000000) >> 7 // imm[5:3]
+                                | (inst & 0b1100000) << 1; // imm[7:6]
+                        let rd = FReg((((inst >> 2) & 0b111) + 8) as u8);
+                        let rs1 = Reg((((inst >> 7) & 0b111) + 8) as u8);
+
+                        Inst::Fld {
+                            rd,
+                            rs1,
+                            offset: imm as i32,
                         }
                     }
                     0b010 => {
@@ -427,10 +540,7 @@ impl Inst {
                             offset: imm as i32,
                         }
                     }
-                    _ => Inst::Error(
-                        format!("unimplemented: quadrant={quadrant:02b} {funct3:03b} {inst:x}")
-                            .into(),
-                    ),
+                    _ => Inst::Error(inst as u32),
                 }
             }
             0b01 => {
@@ -506,13 +616,13 @@ impl Inst {
                                           | (inst & 0b1111100) >> 2; // imm[4:0]
 
                                 if shamt == 0 {
-                                    panic!("Immediate must be nonzero");
-                                }
-
-                                Inst::Srli {
-                                    rd,
-                                    rs1: rd,
-                                    shamt: shamt as u32,
+                                    Inst::Error(inst as u32)
+                                } else {
+                                    Inst::Srli {
+                                        rd,
+                                        rs1: rd,
+                                        shamt: shamt as u32,
+                                    }
                                 }
                             }
 
@@ -521,13 +631,13 @@ impl Inst {
                                           | (inst & 0b1111100) >> 2; // imm[4:0]
 
                                 if shamt == 0 {
-                                    panic!("Immediate must be nonzero");
-                                }
-
-                                Inst::Srai {
-                                    rd,
-                                    rs1: rd,
-                                    shamt: shamt as u32,
+                                    Inst::Error(inst as u32)
+                                } else {
+                                    Inst::Srai {
+                                        rd,
+                                        rs1: rd,
+                                        shamt: shamt as u32,
+                                    }
                                 }
                             }
 
@@ -554,15 +664,10 @@ impl Inst {
                                     0b011 => Inst::And { rd, rs1: rd, rs2 },
                                     0b100 => Inst::Subw { rd, rs1: rd, rs2 },
                                     0b101 => Inst::Addw { rd, rs1: rd, rs2 },
-
-                                    _ => {
-                                        unreachable!();
-                                    }
+                                    _ => Inst::Error(inst as u32),
                                 }
                             }
-                            _ => Inst::Error(
-                                format!("unimplemented instruction: {inst:0b} {funct2:02b}").into(),
-                            ),
+                            _ => Inst::Error(inst as u32),
                         }
                     }
                     0b101 => {
@@ -612,9 +717,7 @@ impl Inst {
                             offset,
                         }
                     }
-                    _ => Inst::Error(
-                        format!("unimplemented: quadrant={quadrant:02b} {funct3:03b}").into(),
-                    ),
+                    _ => Inst::Error(inst as u32),
                 }
             }
             0b10 => {
@@ -645,7 +748,7 @@ impl Inst {
                                 offset: imm as i32,
                             }
                         } else {
-                            panic!("Invalid instruction");
+                            Inst::Error(inst as u32)
                         }
                     }
                     0b011 => {
@@ -662,7 +765,7 @@ impl Inst {
                                 offset: imm as i32,
                             }
                         } else {
-                            panic!("C.FLWSP not implemented");
+                            Inst::Error(inst as u32)
                         }
                     }
                     0b100 => {
@@ -696,10 +799,31 @@ impl Inst {
                                 offset: 0,
                             }
                         } else {
-                            Inst::Error(
-                                format!("compressed instruction `{inst:016b}` not implemented.")
-                                    .into(),
-                            )
+                            Inst::Ebreak
+                        }
+                    }
+                    0b101 => {
+                        // C.FDSP
+
+                        let rs2 = FReg(((inst >> 2) & 0b11111) as u8);
+                        let imm = (inst & 0b1110000000) >> 1 // imm[8:6]
+                                | (inst & 0b1110000000000) >> 7; // imm[5:3]
+
+                        Inst::Fsd {
+                            rs2,
+                            rs1: SP,
+                            offset: imm as i32,
+                        }
+                    }
+                    0b110 => {
+                        let imm = (inst & 0b110000000) >> 1 // imm[7:6]
+                                | (inst & 0b1111000000000) >> 7; // imm[5:2]
+                        let rs2 = Reg(((inst >> 2) & 0b11111) as u8);
+
+                        Inst::Sw {
+                            rs2,
+                            rs1: SP,
+                            offset: imm as i32,
                         }
                     }
                     0b111 => {
@@ -714,10 +838,10 @@ impl Inst {
                             offset,
                         }
                     }
-                    _ => Inst::Error(format!("quadrant={quadrant:02b} funct3={funct3:03b}").into()),
+                    _ => Inst::Error(inst as u32),
                 }
             }
-            0b11 => Inst::Error("Quadrant 11 should not exist".into()),
+            0b11 => Inst::Error(inst as u32),
             _ => unreachable!(),
         }
     }

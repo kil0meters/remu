@@ -7,9 +7,9 @@ use crate::emulator::STACK_START;
 
 #[derive(Debug)]
 pub struct MemoryRange {
-    start: u64,
-    end: u64,
-    data: Box<[u8]>,
+    pub start: u64,
+    pub end: u64,
+    pub data: Box<[u8]>,
 }
 
 impl MemoryRange {
@@ -80,6 +80,10 @@ impl Memory {
             heap_pointer: data_end,
             mmap_regions: VecDeque::new(),
         }
+    }
+
+    pub fn get_text_range(&self) -> (u64, u64) {
+        (self.ranges[0].start, self.ranges[0].end)
     }
 
     #[cfg(test)]

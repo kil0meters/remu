@@ -107,7 +107,7 @@ impl Memory {
         let segments = elf.segments().unwrap();
         for segment in segments {
             match segment.p_type {
-                PT_LOAD | PT_PHDR | PT_TLS | PT_DYNAMIC => {
+                PT_LOAD | PT_PHDR | PT_DYNAMIC => {
                     let addr_start = offset + segment.p_vaddr;
 
                     if segment.p_type == PT_PHDR {
@@ -126,7 +126,7 @@ impl Memory {
                         segment.p_memsz, addr_start, segment.p_type
                     );
 
-                    self.mmap(addr_start, segment.p_memsz, false);
+                    self.create_pages(addr_start, segment.p_memsz);
                     self.write_n(data, addr_start, segment.p_memsz);
 
                     data_end = data_end.max(offset + segment.p_vaddr + segment.p_memsz);
@@ -153,7 +153,7 @@ impl Memory {
             program_header: Default::default(),
         };
 
-        memory.mmap(0, data.len() as u64, false);
+        memory.create_pages(0, data.len() as u64);
         memory.write_n(data, 0, data.len() as u64);
 
         memory
@@ -189,8 +189,20 @@ impl Memory {
         new_end
     }
 
-    pub fn mmap(&mut self, addr: u64, size: u64, destroy_overlapping: bool) -> i64 {
-        let addr = if addr == 0 && self.pages.contains_key(&0) {
+    // creates pages that cover the range [start_addr, start_addr+size)
+    // does not overwrite
+    fn create_pages(&mut self, start_addr: u64, size: u64) {
+        let phys_addr = start_addr & !PAGE_MASK;
+        for addr in (phys_addr..=(start_addr + size)).step_by(PAGE_SIZE as usize) {
+            if !self.pages.contains_key(&addr) {
+                self.pages.insert(addr, EMPTY_PAGE);
+            }
+        }
+    }
+
+    pub fn mmap(&mut self, addr: u64, size: u64) -> i64 {
+        log::info!("MMAP REGION: 0x{:x}-0x{:x}", addr, addr + size);
+        let addr = if addr == 0 {
             let region_start = 0x2000000000000000u64;
 
             // put region after previous region
@@ -214,11 +226,7 @@ impl Memory {
         // This overwrites the data if the addr specified happens to overlap with an existing
         // mapping. But this is the _correct_ behavior according to `man 2 mmap`
         for addr in (phys_addr..=(addr + size)).step_by(PAGE_SIZE as usize) {
-            if destroy_overlapping || !self.pages.contains_key(&addr) {
-                self.pages.insert(addr, EMPTY_PAGE);
-            } else {
-                log::info!("MMAP OVERLAPPING, NOT DELETING");
-            }
+            self.pages.insert(addr, EMPTY_PAGE);
         }
 
         addr as i64
@@ -236,7 +244,7 @@ impl Memory {
 
         assert_eq!(data.len() as u64, len);
 
-        let addr_start = self.mmap(addr, data.len() as u64, true);
+        let addr_start = self.mmap(addr, data.len() as u64);
 
         if addr_start >= 0 {
             self.write_n(data, addr_start as u64, len);

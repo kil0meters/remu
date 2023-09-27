@@ -240,11 +240,9 @@ impl Emulator {
         log::debug!("Writing argv to addr=0x{:x}", self.x[SP]);
 
         // envp
-        self.x[SP] -= 8; // envp[0]
-        self.memory.store_u64(self.x[SP], envp1_addr);
+        // self.x[SP] -= 8; // envp[0]
+        // self.memory.store_u64(self.x[SP], envp1_addr);
         self.x[SP] -= 8;
-
-        // panic!("{:x}", self.pc);
 
         // minimal auxv
         let aux_values = [
@@ -252,8 +250,6 @@ impl Emulator {
             AuxPair(Auxv::Phdr, self.memory.program_header.address), // The address of the program header of the executable
             AuxPair(Auxv::Phent, self.memory.program_header.size), // The size of the program header entry
             AuxPair(Auxv::Phnum, self.memory.program_header.number), // The number of the program headers
-            AuxPair(Auxv::Base, self.pc), // base address of program interpreter
-            AuxPair(Auxv::Base, 0x800000000), // base address of program interpreter
             AuxPair(Auxv::Uid, 0),
             AuxPair(Auxv::Euid, 0),
             AuxPair(Auxv::Gid, 0),
@@ -511,9 +507,9 @@ impl Emulator {
                 if fd == -1 {
                     // Only give address if MMAP_FIXED
                     if (flags & 0x10) != 0 {
-                        self.x[A0] = self.memory.mmap(addr, len, true) as u64;
+                        self.x[A0] = self.memory.mmap(addr, len) as u64;
                     } else {
-                        self.x[A0] = self.memory.mmap(0, len, false) as u64;
+                        self.x[A0] = self.memory.mmap(0, len) as u64;
                     }
                 } else if let Some(descriptor) = self.file_descriptors.get_mut(&fd) {
                     self.x[A0] = self.memory.mmap_file(descriptor, addr, offset, len) as u64;

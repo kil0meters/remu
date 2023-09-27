@@ -4,9 +4,9 @@ use anyhow::Result;
 use clap::Parser;
 use elf::{endian::AnyEndian, ElfBytes};
 use emulator::Emulator;
-use log::{Level, LevelFilter};
+use log::LevelFilter;
 use memory::Memory;
-use simplelog::{Config, ConfigBuilder, SimpleLogger};
+use simplelog::{ConfigBuilder, SimpleLogger};
 
 mod auxvec;
 mod emulator;
@@ -20,7 +20,7 @@ struct Arguments {
     file: String,
 
     #[clap(short, long)]
-    precache: bool,
+    cache: bool,
 
     #[clap(flatten)]
     verbose: clap_verbosity_flag::Verbosity,
@@ -52,7 +52,7 @@ fn main() -> Result<()> {
     }
 
     let memory = Memory::load_elf(file);
-    let mut emulator = Emulator::new(memory);
+    let mut emulator = Emulator::new(memory, args.cache);
 
     loop {
         if let Some(exit_code) = emulator.fetch_and_execute() {

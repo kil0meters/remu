@@ -5,11 +5,13 @@ use elf::{
 };
 use log::{debug, warn};
 
-// std::collections::HashMap => 9.01s
-// nohash_hasher::IntMap     => 17.68s
-// fnv::FnvHashMap           => 7.81s 7.76s 7.73s
-// rustc_hash::FxHashMap     => 7.75s 7.88s 7.83s
-type MemMap<K, V> = fnv::FnvHashMap<K, V>;
+// comparison of hashing algorithms tested
+// default (sip) => 9.01s
+// xxhash        => 9.14
+// nohash        => 17.68s
+// fnv           => 7.81s 7.76s 7.73s
+// fxhash        => 7.75s 7.88s 7.83s
+pub type MemMap<K, V> = fnv::FnvHashMap<K, V>;
 
 use crate::emulator::{FileDescriptor, STACK_START};
 

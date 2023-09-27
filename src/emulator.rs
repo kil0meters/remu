@@ -4,15 +4,14 @@ use std::{
     panic,
 };
 
-use fnv::FnvHashMap;
 use num_traits::FromPrimitive;
 
 use crate::{
     auxvec::{AuxPair, Auxv, RANDOM_BYTES},
     instruction::Inst,
     memory::{
-        Memory, LIBCPP_DATA, LIBCPP_FILE_DESCRIPTOR, LIBC_DATA, LIBC_FILE_DESCRIPTOR, LIBGCCS_DATA,
-        LIBGCCS_FILE_DESCRIPTOR, LIBM_DATA, LIBM_FILE_DESCRIPTOR, PAGE_SIZE,
+        MemMap, Memory, LIBCPP_DATA, LIBCPP_FILE_DESCRIPTOR, LIBC_DATA, LIBC_FILE_DESCRIPTOR,
+        LIBGCCS_DATA, LIBGCCS_FILE_DESCRIPTOR, LIBM_DATA, LIBM_FILE_DESCRIPTOR, PAGE_SIZE,
     },
     syscalls::Syscall,
 };
@@ -172,8 +171,10 @@ pub struct Emulator {
 
     memory: Memory,
 
-    file_descriptors: FnvHashMap<i64, FileDescriptor>,
-    instruction_cache: FnvHashMap<u64, (Inst, u8)>,
+    file_descriptors: MemMap<i64, FileDescriptor>,
+    instruction_cache: MemMap<u64, (Inst, u8)>,
+
+    enable_cache: bool,
 
     /// The number of instructions executed over the lifecycle of the emulator.
     pub fuel_counter: u64,
@@ -183,15 +184,17 @@ pub struct Emulator {
 }
 
 impl Emulator {
-    pub fn new(memory: Memory) -> Self {
+    pub fn new(memory: Memory, enable_cache: bool) -> Self {
         let mut em = Self {
             pc: memory.entry,
             // fscr: 0,
             x: [0; 32],
             f: [0.0; 32],
 
-            instruction_cache: FnvHashMap::default(),
-            file_descriptors: FnvHashMap::default(),
+            instruction_cache: MemMap::default(),
+            file_descriptors: MemMap::default(),
+
+            enable_cache,
 
             memory,
             exit_code: None,
@@ -560,21 +563,23 @@ impl Emulator {
     }
 
     fn fetch(&mut self) -> (Inst, u8) {
-        // if let Some(ref cache) = self.instruction_cache {
-        //     cache[(self.pc - self.text_range.0) as usize >> 1]
-        // } else {
-        let inst_data = self.memory.load_u32(self.pc);
-        let inst = Inst::decode(inst_data);
+        let inst = if self.enable_cache {
+            if let Some(inst) = self.instruction_cache.get(&self.pc) {
+                *inst
+            } else {
+                let inst_data = self.memory.load_u32(self.pc);
+                let inst = Inst::decode(inst_data);
+                self.instruction_cache.insert(self.pc, inst);
+                inst
+            }
+        } else {
+            let inst_data = self.memory.load_u32(self.pc);
+            Inst::decode(inst_data)
+        };
 
-        log::debug!(
-            "{:3} {inst_data:08x} {:05x} {}",
-            self.fuel_counter,
-            self.pc,
-            inst.0
-        );
+        log::debug!("{:3} {:05x} {}", self.fuel_counter, self.pc, inst.0);
 
         inst
-        // }
     }
 
     pub fn fetch_and_execute(&mut self) -> Option<u64> {
@@ -914,7 +919,7 @@ mod tests {
     #[test]
     fn lui() {
         let memory = Memory::from_raw(&[]);
-        let mut emulator = Emulator::new(memory);
+        let mut emulator = Emulator::new(memory, false);
 
         // lui a0, 1000
         emulator.execute_raw(0x003e8537);
@@ -931,7 +936,7 @@ mod tests {
             0x12, 0x23, 0x34, 0x56, 0x78, 0x9a, 0xbc, 0xde, //.
             0xef, 0xff, 0xff, 0xff, 0x00, 0x00, 0x00, 0x00, //.
         ]);
-        let mut emulator = Emulator::new(memory);
+        let mut emulator = Emulator::new(memory, false);
 
         // ld a0, 0(x0)
         emulator.execute_raw(0x00003503);
@@ -956,7 +961,7 @@ mod tests {
             0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, //.
             0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, //.
         ]);
-        let mut emulator = Emulator::new(memory);
+        let mut emulator = Emulator::new(memory, false);
         emulator.x[A0] = 0xdebc9a7856342312;
 
         // sd a0, 0(zero)
@@ -981,7 +986,7 @@ mod tests {
     #[test]
     fn sp_relative() {
         let memory = Memory::from_raw(&[]);
-        let mut emulator = Emulator::new(memory);
+        let mut emulator = Emulator::new(memory, false);
         emulator.x[A0] = 0xdebc9a7856342312;
         let sp_start = emulator.x[SP];
 

@@ -1,36 +1,26 @@
-use std::collections::{HashMap, VecDeque};
-
 use elf::{
-    abi::{DT_NEEDED, DT_SYMBOLIC, PT_DYNAMIC, PT_INTERP, PT_LOAD, PT_PHDR, PT_TLS},
+    abi::{DT_NEEDED, PT_DYNAMIC, PT_INTERP, PT_LOAD, PT_PHDR, PT_TLS},
     endian::{AnyEndian, EndianParse},
-    segment::SegmentTable,
     ElfBytes,
 };
 use log::{debug, warn};
 
+// std::collections::HashMap => 9.01s
+// nohash_hasher::IntMap     => 17.68s
+// fnv::FnvHashMap           => 7.81s 7.76s 7.73s
+// rustc_hash::FxHashMap     => 7.75s 7.88s 7.83s
+type MemMap<K, V> = fnv::FnvHashMap<K, V>;
+
 use crate::emulator::{FileDescriptor, STACK_START};
 
-#[derive(Debug)]
-pub struct MemoryRange {
-    pub start: u64,
-    pub end: u64,
-    pub data: Box<[u8]>,
-}
+// only this constant should be changed.
+// but it actually can't be changed since the linker complains :)
+const PAGE_BITS: u64 = 12;
 
-impl MemoryRange {
-    fn in_range(&self, idx: u64) -> bool {
-        idx >= self.start && idx < self.end
-    }
-
-    // SAFETY: valid if in range
-    unsafe fn fetch_byte(&mut self, idx: u64) -> *mut u8 {
-        self.data.as_mut_ptr().add((idx - self.start) as usize)
-    }
-}
-
-pub const PAGESIZE: u64 = 1 << 12;
-pub const PAGE_MASK: u64 = (1 << 12) - 1;
-type MemoryPage = [u8; PAGESIZE as usize];
+pub const PAGE_SIZE: u64 = 1 << PAGE_BITS;
+pub const PAGE_MASK: u64 = (1 << PAGE_BITS) - 1;
+type MemoryPage = [u8; PAGE_SIZE as usize];
+const EMPTY_PAGE: MemoryPage = [0; PAGE_SIZE as usize];
 
 pub const LD_LINUX_DATA: &'static [u8] = include_bytes!("../res/ld-linux-riscv64-lp64d.so.1");
 pub const LIBC_DATA: &'static [u8] = include_bytes!("../res/libc.so.6");
@@ -52,94 +42,45 @@ pub struct ProgramHeaderInfo {
 }
 
 pub struct Memory {
-    pub ranges: Vec<MemoryRange>,
-    pub stack: Vec<u8>,
-    pub heap: Vec<u8>,
+    // No fancy hashing algorithm here as we're not concerned about mittigating denial of service
+    // attacks, and we want our program to be deterministic.
+    pub pages: MemMap<u64, MemoryPage>,
+
+    // the address to the end of the heap
+    pub heap_pointer: u64,
+
+    // address to the top of the stack, page aligned
+    pub stack_pointer: u64,
 
     // the address of entry to the program
     pub entry: u64,
 
     pub program_header: ProgramHeaderInfo,
-
-    // the address to the end of the heap
-    pub heap_pointer: u64,
-
-    // probably the best data structure is a self balancing binary search tree where node keys are
-    // a range of integers (start and end of memory).
-    pub mmap_pages: HashMap<u64, MemoryPage>,
 }
 
 impl Memory {
     pub fn load_elf<T: EndianParse>(elf: ElfBytes<T>) -> Self {
         let mut memory = Memory {
-            ranges: Vec::new(),
-            stack: vec![0; 512],
-            heap: Vec::new(),
             entry: 0,
             program_header: ProgramHeaderInfo::default(),
             heap_pointer: 0,
-            mmap_pages: HashMap::new(),
+            stack_pointer: STACK_START + 1,
+            pages: MemMap::default(),
         };
 
         // load dynamic libraries, if they exist
         // https://blog.k3170makan.com/2018/11/introduction-to-elf-format-part-vii.html
         // https://www.youtube.com/watch?v=Ss2e6JauS0Y
-        if let Some((dynamic_symbol_table, string_table)) = elf.dynamic_symbol_table().unwrap() {
+        if let Some((_dynamic_symbol_table, string_table)) = elf.dynamic_symbol_table().unwrap() {
             if let Some(dynamic) = elf.dynamic().unwrap() {
                 for x in dynamic {
                     if x.d_tag == DT_NEEDED {
                         let obj = string_table.get(x.d_val() as usize).unwrap();
-                        println!("dynamic links with: {}", obj);
+                        log::info!("requires shared object: {}", obj);
                     }
                 }
 
-                let rela_header = elf.section_header_by_name(".rela.plt").unwrap().unwrap();
-                let rela_data = elf.section_data_as_relas(&rela_header).unwrap();
-
-                let mut symbols_to_link = Vec::new();
-                for rel in rela_data {
-                    let symbol = dynamic_symbol_table.get(rel.r_sym as usize).unwrap();
-                    let symbol_name = string_table.get(symbol.st_name as usize).unwrap();
-
-                    symbols_to_link.push((symbol_name, rel.r_offset));
-                }
-
-                // let libc_elf = ElfBytes::<AnyEndian>::minimal_parse(LIBC_DATA).unwrap();
-                // let (libc_symbol_table, libc_string_table) =
-                //     libc_elf.dynamic_symbol_table().unwrap().unwrap();
-                //
-                // println!("{:?}", symbols_to_link);
-                //
-                // for (symbol_name, offset) in symbols_to_link {
-                //     for libc_symbol in libc_symbol_table.iter() {
-                //         let libc_symbol_name =
-                //             libc_string_table.get(libc_symbol.st_name as usize).unwrap();
-                //
-                //         if libc_symbol_name == symbol_name {
-                //             log::info!("dynamically linking {symbol_name}({offset:x}) => libc::{libc_symbol_name}({:x})", libc_symbol.st_value);
-                //
-                //             memory.store_u64(offset, libc_symbol.st_value);
-                //         }
-                //     }
-                // }
-
                 let ld_elf = ElfBytes::<AnyEndian>::minimal_parse(LD_LINUX_DATA).unwrap();
-                // let (ld_symbol_table, ld_string_table) =
-                //     ld_elf.dynamic_symbol_table().unwrap().unwrap();
-                let (ld_symbol_table, ld_string_table) = ld_elf.symbol_table().unwrap().unwrap();
-
-                let dl_runtime_resolve_sym = ld_symbol_table
-                    .iter()
-                    .find(|ld_symbol| {
-                        let ld_symbol_name = ld_string_table.get(ld_symbol.st_name as usize);
-                        if let Ok("_dl_runtime_resolve") = ld_symbol_name {
-                            true
-                        } else {
-                            false
-                        }
-                    })
-                    .expect("Failed to find _dl_runtime_resolve in dynamic linker");
-
                 log::info!("Loading dynamically linked executable.");
 
                 let ld_offset = 0x80000000;
@@ -148,9 +89,6 @@ impl Memory {
                 memory.map_segments(0x0, &elf);
 
                 memory.entry = ld_offset + ld_elf.ehdr.e_entry;
-
-                // TODO: make this work dynamically
-                memory.store_u64(8200, ld_offset + dl_runtime_resolve_sym.st_value);
             }
         } else {
             log::info!("Loading statically linked executable.");
@@ -168,33 +106,28 @@ impl Memory {
         for segment in segments {
             match segment.p_type {
                 PT_LOAD | PT_PHDR | PT_TLS | PT_DYNAMIC => {
+                    let addr_start = offset + segment.p_vaddr;
+
                     if segment.p_type == PT_PHDR {
                         self.program_header.size = segment.p_memsz;
-                        self.program_header.address = offset + segment.p_vaddr;
+                        self.program_header.address = addr_start;
                         self.program_header.number = elf.ehdr.e_phnum as u64;
                         self.program_header.entry = elf.ehdr.e_entry as u64;
                     }
 
-                    let mut data = Vec::from(elf.segment_data(&segment).unwrap());
-                    assert!(data.len() as u64 <= segment.p_memsz);
+                    let data = elf.segment_data(&segment).unwrap();
 
-                    data.resize(segment.p_memsz as usize, 0);
+                    assert!(data.len() as u64 <= segment.p_memsz);
 
                     debug!(
                         "Mapping {} bytes onto offset {:x}. p_type = {}",
-                        segment.p_memsz,
-                        offset + segment.p_vaddr,
-                        segment.p_type
+                        segment.p_memsz, addr_start, segment.p_type
                     );
 
-                    let range = MemoryRange {
-                        start: offset + segment.p_vaddr,
-                        end: offset + segment.p_vaddr + data.len() as u64,
-                        data: data.into(),
-                    };
+                    self.mmap(addr_start, segment.p_memsz, false);
+                    self.write_n(data, addr_start, segment.p_memsz);
 
-                    data_end = data_end.max(range.end);
-                    self.ranges.push(range);
+                    data_end = data_end.max(offset + segment.p_vaddr + segment.p_memsz);
                 }
                 PT_INTERP => {
                     log::debug!("interp: {segment:x?}");
@@ -208,72 +141,82 @@ impl Memory {
         self.heap_pointer = data_end;
     }
 
-    pub fn get_text_range(&self) -> (u64, u64) {
-        (self.ranges[0].start, self.ranges[0].end)
-    }
-
     #[cfg(test)]
     pub fn from_raw(data: &[u8]) -> Self {
-        let data = MemoryRange {
-            start: 0,
-            end: data.len() as u64,
-            data: data.into(),
-        };
-        let data_end = data.end;
-        Memory {
-            ranges: [data].into(),
-            stack: vec![0; 512],
-            heap: Vec::new(),
+        let mut memory = Memory {
             entry: 0,
-            heap_pointer: data_end,
-            mmap_pages: HashMap::new(),
+            stack_pointer: STACK_START,
+            heap_pointer: 0,
+            pages: MemMap::default(),
             program_header: Default::default(),
-        }
+        };
+
+        memory.mmap(0, data.len() as u64, false);
+        memory.write_n(data, 0, data.len() as u64);
+
+        memory
     }
 
     pub fn brk(&mut self, new_end: u64) -> u64 {
         // if break point is invalid, we return the current heap pointer
-        if new_end < self.heap_pointer || new_end >= STACK_START - self.stack.len() as u64 {
+        if new_end < self.heap_pointer || new_end >= self.stack_pointer {
             return self.heap_pointer;
         }
 
-        self.heap.resize(
-            new_end as usize - self.heap_pointer as usize + self.heap.len(),
-            0,
-        );
+        log::info!("Changing heap by: {} bytes", new_end - self.heap_pointer);
 
-        self.heap_pointer = new_end;
+        // the address of the last valid page on the heap
+        let phys_heap_addr = self.heap_pointer & !PAGE_MASK;
 
-        return self.heap_pointer;
-    }
-
-    pub fn mmap(&mut self, addr: u64, size: u64) -> i64 {
-        // if size is not multiple of PAGESIZE, error
-        if addr % PAGESIZE != 0 {
-            return -1;
+        match phys_heap_addr.cmp(&new_end) {
+            std::cmp::Ordering::Less => {
+                for addr in (phys_heap_addr + PAGE_SIZE..=new_end).step_by(PAGE_SIZE as usize) {
+                    debug_assert!(!self.pages.contains_key(&addr));
+                    self.pages.insert(addr, EMPTY_PAGE);
+                    self.heap_pointer += PAGE_SIZE;
+                }
+            }
+            std::cmp::Ordering::Equal => {
+                self.heap_pointer = new_end;
+            }
+            std::cmp::Ordering::Greater => {
+                panic!("Reducing heap size is not yet supported.");
+            }
         }
 
-        let addr = if addr == 0 {
+        new_end
+    }
+
+    pub fn mmap(&mut self, addr: u64, size: u64, destroy_overlapping: bool) -> i64 {
+        let addr = if addr == 0 && self.pages.contains_key(&0) {
             let region_start = 0x2000000000000000u64;
 
             // put region after previous region
+
             let mut max_addr = 0;
-            for (region, _) in &self.mmap_pages {
-                max_addr = max_addr.max(region + PAGESIZE);
+            for (region, _) in &self.pages {
+                // not stack regions
+                if *region < 0x7000000000000000 {
+                    max_addr = max_addr.max(region + PAGE_SIZE);
+                }
             }
 
             region_start.max(max_addr)
         } else {
-            // TODO, ensure not overlapping and shit.
             addr
         };
 
+        let phys_addr = addr & !PAGE_MASK;
         log::info!("MMAP REGION: 0x{:x}-0x{:x}", addr, addr + size);
 
         // This overwrites the data if the addr specified happens to overlap with an existing
         // mapping. But this is the _correct_ behavior according to `man 2 mmap`
-        for addr in (addr..(addr + size)).step_by(PAGESIZE as usize) {
-            self.mmap_pages.insert(addr, [0; 4096]);
+        for addr in (phys_addr..=(addr + size)).step_by(PAGE_SIZE as usize) {
+            if destroy_overlapping || !self.pages.contains_key(&addr) {
+                self.pages.insert(addr, EMPTY_PAGE);
+            } else {
+                log::info!("MMAP OVERLAPPING, NOT DELETING");
+            }
         }
 
         addr as i64
@@ -291,7 +234,7 @@ impl Memory {
 
         assert_eq!(data.len() as u64, len);
 
-        let addr_start = self.mmap(addr, data.len() as u64);
+        let addr_start = self.mmap(addr, data.len() as u64, true);
 
         if addr_start >= 0 {
             self.write_n(data, addr_start as u64, len);
@@ -311,82 +254,154 @@ impl Memory {
     //     }
     // }
 
-    pub fn load_u64(&mut self, index: u64) -> u64 {
-        unsafe { self.data_ptr(index).cast::<u64>().read_unaligned() }
+    pub fn load_u64(&mut self, addr: u64) -> u64 {
+        let virt_addr = addr & PAGE_MASK;
+        if virt_addr < PAGE_MASK - 8 {
+            // fast path
+            // SAFETY: guaranteed to not cross page boundary
+            unsafe { self.data_ptr(addr).cast::<u64>().read_unaligned() }
+        } else {
+            // slow path
+            return (self.load_u8(addr) as u64)
+                | ((self.load_u8(addr + 1) as u64) << 8)
+                | ((self.load_u8(addr + 2) as u64) << 16)
+                | ((self.load_u8(addr + 3) as u64) << 24)
+                | ((self.load_u8(addr + 4) as u64) << 32)
+                | ((self.load_u8(addr + 5) as u64) << 40)
+                | ((self.load_u8(addr + 6) as u64) << 48)
+                | ((self.load_u8(addr + 7) as u64) << 56);
+        }
     }
 
-    pub fn load_u32(&mut self, index: u64) -> u32 {
-        unsafe { self.data_ptr(index).cast::<u32>().read_unaligned() }
+    pub fn load_u32(&mut self, addr: u64) -> u32 {
+        let virt_addr = addr & PAGE_MASK;
+        if virt_addr < PAGE_MASK - 4 {
+            // fast path
+            // SAFETY: guaranteed to not cross page boundary
+            unsafe { self.data_ptr(addr).cast::<u32>().read_unaligned() }
+        } else {
+            // slow path
+            return (self.load_u8(addr) as u32)
+                | ((self.load_u8(addr + 1) as u32) << 8)
+                | ((self.load_u8(addr + 2) as u32) << 16)
+                | ((self.load_u8(addr + 3) as u32) << 24);
+        }
     }
 
-    pub fn load_u16(&mut self, index: u64) -> u16 {
-        unsafe { self.data_ptr(index).cast::<u16>().read_unaligned() }
+    pub fn load_u16(&mut self, addr: u64) -> u16 {
+        let virt_addr = addr & PAGE_MASK;
+        if virt_addr < PAGE_MASK - 2 {
+            // fast path
+            // SAFETY: guaranteed to not cross page boundary
+            unsafe { self.data_ptr(addr).cast::<u16>().read_unaligned() }
+        } else {
+            // slow path
+            return (self.load_u8(addr) as u16) //.
+                | ((self.load_u8(addr + 1) as u16) << 8);
+        }
     }
 
     pub fn load_u8(&mut self, index: u64) -> u8 {
+        // SAFETY: it's impossible for loading a byte to cross a page boundry.
         unsafe { *self.data_ptr(index) }
     }
 
-    unsafe fn data_ptr(&mut self, idx: u64) -> *mut u8 {
-        // try loading from executable mapped memory ranges
-        for range in self.ranges.iter_mut() {
-            if range.in_range(idx) {
-                return range.fetch_byte(idx);
+    fn data_ptr(&mut self, addr: u64) -> *mut u8 {
+        // try loading from an page
+        let phys_addr = addr & !PAGE_MASK;
+        let virt_addr = addr & PAGE_MASK;
+
+        debug_assert!(virt_addr < PAGE_SIZE);
+
+        if let Some(page) = self.pages.get_mut(&phys_addr) {
+            unsafe {
+                // SAFETY: virt_addr < PAGE_SIZE
+                return page.as_mut_ptr().add(virt_addr as usize);
             }
         }
 
-        // try loading from a mmap page
-        let phys_addr = idx & !PAGE_MASK;
-        if let Some(page) = self.mmap_pages.get_mut(&phys_addr) {
-            let virt_addr = idx & PAGE_MASK;
-            return page.as_mut_ptr().add(virt_addr as usize);
-        }
-
-        let heap_start = self.heap_pointer - self.heap.len() as u64;
-        if idx >= heap_start && idx < self.heap_pointer {
-            let heap_idx = idx - heap_start;
-
-            self.heap.as_mut_ptr().add(heap_idx as usize)
-        } else if idx <= STACK_START {
-            let mut stack_end = STACK_START - self.stack.len() as u64;
-
-            while stack_end > idx {
-                if stack_end - idx >= 0xfffff {
-                    panic!("Invalid memory location: {idx:x}");
+        if addr <= STACK_START {
+            while self.stack_pointer > addr {
+                if self.stack_pointer - addr >= 0xfffff {
+                    panic!("Invalid memory location: {addr:x}");
                 }
 
-                // resize and shift
-                // manual vec implementation here
-                self.stack.extend_from_within(0..self.stack.len());
+                // move stack pointer down by a page
+                self.stack_pointer -= PAGE_SIZE;
 
-                stack_end = STACK_START - self.stack.len() as u64;
+                debug_assert!(!self.pages.contains_key(&self.stack_pointer));
+                self.pages.insert(self.stack_pointer, EMPTY_PAGE);
             }
 
-            self.stack.as_mut_ptr().add((idx - stack_end) as usize)
+            let page = self.pages.get_mut(&phys_addr).unwrap();
+            unsafe {
+                // SAFETY: virt_addr < PAGE_SIZE
+                return page.as_mut_ptr().add(virt_addr as usize);
+            }
         } else {
-            panic!("Attempted to load to address not mapped to memoery: {idx:x}");
+            panic!("Attempted to load to address not mapped to memory: {addr:x}");
         }
     }
 
-    pub fn store_u64(&mut self, idx: u64, data: u64) {
-        unsafe { self.data_ptr(idx).cast::<u64>().write_unaligned(data) }
+    pub fn store_u64(&mut self, addr: u64, data: u64) {
+        let virt_addr = addr & PAGE_MASK;
+        if virt_addr < PAGE_MASK - 8 {
+            // fast path
+            // SAFETY: guaranteed to not cross page boundary
+            unsafe { self.data_ptr(addr).cast::<u64>().write_unaligned(data) }
+        } else {
+            // slow path
+            self.store_u8(addr + 7, (data >> 56) as u8);
+            self.store_u8(addr + 6, (data >> 48) as u8);
+            self.store_u8(addr + 5, (data >> 40) as u8);
+            self.store_u8(addr + 4, (data >> 32) as u8);
+            self.store_u8(addr + 3, (data >> 24) as u8);
+            self.store_u8(addr + 2, (data >> 16) as u8);
+            self.store_u8(addr + 1, (data >> 8) as u8);
+            self.store_u8(addr + 0, (data) as u8);
+        }
     }
 
-    pub fn store_u32(&mut self, idx: u64, data: u32) {
-        unsafe { self.data_ptr(idx).cast::<u32>().write_unaligned(data) }
+    pub fn store_u32(&mut self, addr: u64, data: u32) {
+        let virt_addr = addr & PAGE_MASK;
+        if virt_addr < PAGE_MASK - 4 {
+            // fast path
+            // SAFETY: guaranteed to not cross page boundary
+            unsafe { self.data_ptr(addr).cast::<u32>().write_unaligned(data) }
+        } else {
+            // slow path
+            self.store_u8(addr + 3, (data >> 24) as u8);
+            self.store_u8(addr + 2, (data >> 16) as u8);
+            self.store_u8(addr + 1, (data >> 8) as u8);
+            self.store_u8(addr + 0, (data) as u8);
+        }
     }
 
-    pub fn store_u16(&mut self, idx: u64, data: u16) {
-        unsafe { self.data_ptr(idx).cast::<u16>().write_unaligned(data) }
+    pub fn store_u16(&mut self, addr: u64, data: u16) {
+        let virt_addr = addr & PAGE_MASK;
+        if virt_addr < PAGE_MASK - 2 {
+            // fast path
+            // SAFETY: guaranteed to not cross page boundary
+            unsafe { self.data_ptr(addr).cast::<u16>().write_unaligned(data) }
+        } else {
+            // slow path
+            self.store_u8(addr + 1, (data >> 8) as u8);
+            self.store_u8(addr + 0, (data) as u8);
+        }
     }
 
     pub fn store_u8(&mut self, idx: u64, data: u8) {
+        // SAFETY: guaranteed to not cross page boundary
         unsafe { self.data_ptr(idx).write_unaligned(data) }
     }
 
     pub fn write_n(&mut self, s: &[u8], addr: u64, len: u64) {
         for (i, b) in s.iter().take(len as usize).enumerate() {
             self.store_u8(addr + i as u64, *b);
+        }
+        for i in s.len() as u64..len {
+            self.store_u8(addr + i, 0);
+            // println!("SETTING ZERO: {:x}", addr + i);
         }
     }
 
@@ -407,25 +422,6 @@ impl Memory {
         let s = String::from_utf8_lossy(&data);
         s.into()
     }
-
-    // super unsafe, probably requires null termination
-    // pub unsafe fn read_string(&mut self, mut addr: u64) -> String {
-    //     let mut data = Vec::new();
-    //     // read bytes until we get null
-    //     loop {
-    //         let c = self.load_u8(addr);
-    //         addr += 1;
-    //
-    //         if c == 0 {
-    //             break;
-    //         }
-    //
-    //         data.push(c);
-    //     }
-    //
-    //     let s = String::from_utf8_lossy(&data);
-    //     s.into()
-    // }
 
     pub fn read_file(&mut self, file_descriptor: &mut FileDescriptor, buf: u64, count: u64) -> i64 {
         let o = file_descriptor.offset as usize;

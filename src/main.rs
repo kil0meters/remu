@@ -4,8 +4,9 @@ use anyhow::Result;
 use clap::Parser;
 use elf::{endian::AnyEndian, ElfBytes};
 use emulator::Emulator;
+use log::{Level, LevelFilter};
 use memory::Memory;
-use simplelog::{Config, SimpleLogger};
+use simplelog::{Config, ConfigBuilder, SimpleLogger};
 
 mod auxvec;
 mod emulator;
@@ -27,7 +28,12 @@ struct Arguments {
 
 fn main() -> Result<()> {
     let args = Arguments::parse();
-    SimpleLogger::init(args.verbose.log_level_filter(), Config::default())?;
+    let config = ConfigBuilder::new()
+        .set_time_level(LevelFilter::Trace)
+        .set_thread_level(LevelFilter::Trace)
+        .build();
+
+    SimpleLogger::init(args.verbose.log_level_filter(), config)?;
 
     let file_data = std::fs::read(args.file).expect("Could not read file.");
     let slice = file_data.as_slice();
@@ -47,10 +53,6 @@ fn main() -> Result<()> {
 
     let memory = Memory::load_elf(file);
     let mut emulator = Emulator::new(memory);
-
-    if args.precache {
-        emulator.precache_instructions();
-    }
 
     loop {
         if let Some(exit_code) = emulator.fetch_and_execute() {

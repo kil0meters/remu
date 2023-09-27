@@ -1,12 +1,10 @@
 use std::{
-    collections::HashMap,
     fmt::Display,
-    hash::Hash,
-    io::Write,
     ops::{Index, IndexMut},
     panic,
 };
 
+use fnv::FnvHashMap;
 use num_traits::FromPrimitive;
 
 use crate::{
@@ -14,7 +12,7 @@ use crate::{
     instruction::Inst,
     memory::{
         Memory, LIBCPP_DATA, LIBCPP_FILE_DESCRIPTOR, LIBC_DATA, LIBC_FILE_DESCRIPTOR, LIBGCCS_DATA,
-        LIBGCCS_FILE_DESCRIPTOR, LIBM_DATA, LIBM_FILE_DESCRIPTOR, PAGESIZE,
+        LIBGCCS_FILE_DESCRIPTOR, LIBM_DATA, LIBM_FILE_DESCRIPTOR, PAGE_SIZE,
     },
     syscalls::Syscall,
 };
@@ -172,11 +170,10 @@ pub struct Emulator {
     x: [u64; 32],
     f: [f64; 32],
 
-    instruction_cache: Option<Box<[(Inst, u8)]>>,
-    text_range: (u64, u64),
     memory: Memory,
 
-    file_descriptors: HashMap<i64, FileDescriptor>,
+    file_descriptors: FnvHashMap<i64, FileDescriptor>,
+    instruction_cache: FnvHashMap<u64, (Inst, u8)>,
 
     /// The number of instructions executed over the lifecycle of the emulator.
     pub fuel_counter: u64,
@@ -193,10 +190,8 @@ impl Emulator {
             x: [0; 32],
             f: [0.0; 32],
 
-            instruction_cache: None,
-            text_range: memory.get_text_range(),
-
-            file_descriptors: HashMap::new(),
+            instruction_cache: FnvHashMap::default(),
+            file_descriptors: FnvHashMap::default(),
 
             memory,
             exit_code: None,
@@ -209,33 +204,6 @@ impl Emulator {
         em.init_auxv_stack();
 
         em
-    }
-
-    pub fn precache_instructions(&mut self) {
-        let mut instructions = Vec::new();
-
-        // TODO: multithread
-
-        let mut pc = self.text_range.0;
-        while pc < self.text_range.1 {
-            let inst_data = self.memory.load_u32(pc);
-            let inst_with_incr = Inst::decode(inst_data);
-
-            // log::debug!("{pc:07x} {}", inst_with_incr.0);
-
-            pc += inst_with_incr.1 as u64;
-
-            match inst_with_incr.1 {
-                2 => instructions.push(inst_with_incr),
-                4 => {
-                    instructions.push(inst_with_incr);
-                    instructions.push(inst_with_incr);
-                }
-                _ => unreachable!(),
-            }
-        }
-
-        self.instruction_cache = Some(instructions.into_boxed_slice());
     }
 
     // https://github.com/torvalds/linux/blob/master/fs/binfmt_elf.c#L175
@@ -288,7 +256,7 @@ impl Emulator {
             AuxPair(Auxv::Gid, 0),
             AuxPair(Auxv::Egid, 0),
             AuxPair(Auxv::Secure, 0),
-            AuxPair(Auxv::Pagesz, PAGESIZE),
+            AuxPair(Auxv::Pagesz, PAGE_SIZE),
             AuxPair(Auxv::Random, at_random_addr),
             AuxPair(Auxv::Execfn, program_name_addr),
             AuxPair(Auxv::Null, 0),
@@ -540,9 +508,9 @@ impl Emulator {
                 if fd == -1 {
                     // Only give address if MMAP_FIXED
                     if (flags & 0x10) != 0 {
-                        self.x[A0] = self.memory.mmap(addr, len) as u64;
+                        self.x[A0] = self.memory.mmap(addr, len, true) as u64;
                     } else {
-                        self.x[A0] = self.memory.mmap(0, len) as u64;
+                        self.x[A0] = self.memory.mmap(0, len, false) as u64;
                     }
                 } else if let Some(descriptor) = self.file_descriptors.get_mut(&fd) {
                     self.x[A0] = self.memory.mmap_file(descriptor, addr, offset, len) as u64;
@@ -592,18 +560,26 @@ impl Emulator {
     }
 
     fn fetch(&mut self) -> (Inst, u8) {
-        if let Some(ref cache) = self.instruction_cache {
-            cache[(self.pc - self.text_range.0) as usize >> 1]
-        } else {
-            let inst_data = self.memory.load_u32(self.pc);
-            Inst::decode(inst_data)
-        }
+        // if let Some(ref cache) = self.instruction_cache {
+        //     cache[(self.pc - self.text_range.0) as usize >> 1]
+        // } else {
+        let inst_data = self.memory.load_u32(self.pc);
+        let inst = Inst::decode(inst_data);
+
+        log::debug!(
+            "{:3} {inst_data:08x} {:05x} {}",
+            self.fuel_counter,
+            self.pc,
+            inst.0
+        );
+
+        inst
+        // }
     }
 
     pub fn fetch_and_execute(&mut self) -> Option<u64> {
         let (inst, incr) = self.fetch();
 
-        log::debug!("{:3} {:05x} {}", self.fuel_counter, self.pc, inst);
         // self.print_registers();
 
         self.execute(inst, incr as u64);

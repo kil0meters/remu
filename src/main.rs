@@ -12,7 +12,6 @@ mod auxvec;
 mod emulator;
 mod instruction;
 mod memory;
-mod stack;
 mod syscalls;
 
 #[derive(Parser)]

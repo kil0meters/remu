@@ -1,7 +1,10 @@
 use std::{
+    collections::HashMap,
     fmt::Display,
+    hash::Hash,
     io::Write,
     ops::{Index, IndexMut},
+    panic,
 };
 
 use num_traits::FromPrimitive;
@@ -9,7 +12,10 @@ use num_traits::FromPrimitive;
 use crate::{
     auxvec::{AuxPair, Auxv, RANDOM_BYTES},
     instruction::Inst,
-    memory::Memory,
+    memory::{
+        Memory, LIBCPP_DATA, LIBCPP_FILE_DESCRIPTOR, LIBC_DATA, LIBC_FILE_DESCRIPTOR, LIBGCCS_DATA,
+        LIBGCCS_FILE_DESCRIPTOR, LIBM_DATA, LIBM_FILE_DESCRIPTOR, PAGESIZE,
+    },
     syscalls::Syscall,
 };
 
@@ -129,6 +135,7 @@ impl Display for FReg {
     }
 }
 
+pub const RA: Reg = Reg(1);
 pub const SP: Reg = Reg(2);
 pub const S0: Reg = Reg(8);
 pub const S1: Reg = Reg(9);
@@ -153,6 +160,12 @@ pub const S11: Reg = Reg(27);
 
 pub const STACK_START: u64 = 0x7fffffffffffffff;
 
+pub struct FileDescriptor {
+    // current file read location
+    pub offset: u64,
+    pub data: &'static [u8],
+}
+
 pub struct Emulator {
     pc: u64,
     // fscr: u64,
@@ -163,24 +176,27 @@ pub struct Emulator {
     text_range: (u64, u64),
     memory: Memory,
 
-    exit_code: Option<u64>,
+    file_descriptors: HashMap<i64, FileDescriptor>,
 
     /// The number of instructions executed over the lifecycle of the emulator.
     pub fuel_counter: u64,
     // Similar to fuel_counter, but also takes into account intruction level parallelism and cache misses.
     // performance_counter: u64,
+    exit_code: Option<u64>,
 }
 
 impl Emulator {
-    pub fn new(entry: u64, mut memory: Memory) -> Self {
+    pub fn new(memory: Memory) -> Self {
         let mut em = Self {
-            pc: entry,
+            pc: memory.entry,
             // fscr: 0,
             x: [0; 32],
             f: [0.0; 32],
 
             instruction_cache: None,
             text_range: memory.get_text_range(),
+
+            file_descriptors: HashMap::new(),
 
             memory,
             exit_code: None,
@@ -236,28 +252,51 @@ impl Emulator {
 
         self.x[SP] -= 8; // for alignment
         let program_name_addr = self.x[SP];
-        self.memory.write_string_n(b"/prog\0", program_name_addr, 8);
+        self.memory.write_n(b"/prog\0", program_name_addr, 8);
+
+        self.x[SP] -= 16;
+        let envp1_addr = self.x[SP];
+        self.memory.write_n(b"LD_DEBUG=all\0", envp1_addr, 13);
 
         // argc
-        self.x[SP] -= 4;
+        self.x[SP] -= 8;
         self.memory.store_u32(self.x[SP], 1); // one argument
 
         // argv
         self.x[SP] -= 8; // argv[0]
         self.memory.store_u64(self.x[SP], program_name_addr);
 
+        log::debug!("Writing argv to addr=0x{:x}", self.x[SP]);
+
         // envp
+        self.x[SP] -= 8; // envp[0]
+        self.memory.store_u64(self.x[SP], envp1_addr);
         self.x[SP] -= 8;
+
+        // panic!("{:x}", self.pc);
 
         // minimal auxv
         let aux_values = [
+            AuxPair(Auxv::Entry, self.memory.program_header.entry), // The address of the entry of the executable
+            AuxPair(Auxv::Phdr, self.memory.program_header.address), // The address of the program header of the executable
+            AuxPair(Auxv::Phent, self.memory.program_header.size), // The size of the program header entry
+            AuxPair(Auxv::Phnum, self.memory.program_header.number), // The number of the program headers
+            AuxPair(Auxv::Base, self.pc), // base address of program interpreter
+            AuxPair(Auxv::Base, 0x800000000), // base address of program interpreter
+            AuxPair(Auxv::Uid, 0),
+            AuxPair(Auxv::Euid, 0),
+            AuxPair(Auxv::Gid, 0),
+            AuxPair(Auxv::Egid, 0),
+            AuxPair(Auxv::Secure, 0),
+            AuxPair(Auxv::Pagesz, PAGESIZE),
             AuxPair(Auxv::Random, at_random_addr),
+            AuxPair(Auxv::Execfn, program_name_addr),
             AuxPair(Auxv::Null, 0),
         ];
 
         for AuxPair(key, val) in aux_values.into_iter() {
             self.x[SP] -= 16;
-            // log::debug!("Writing {:?}={} at 0x{:x}", key, val, self.x[SP]);
+            log::debug!("Writing {:?}=0x{:x} at 0x{:x}", key, val, self.x[SP]);
             // self.memory.store_u64(self.x[SP], key as u64);
             self.memory.store_u64(self.x[SP], key as u64);
             self.memory.store_u64(self.x[SP] + 8, val);
@@ -274,16 +313,94 @@ impl Emulator {
         let sc: Syscall = FromPrimitive::from_u64(id).expect(&format!("Unknown syscall: {id}"));
 
         // self.print_registers();
-        log::debug!("Executing syscall {sc:?}");
+        log::info!("{:x}: executing syscall {sc:?}", self.pc);
 
         match sc {
             Syscall::Faccessat => {
-                self.x[A0] = (-1i64) as u64;
+                self.x[A0] = -1i64 as u64;
                 // TODO: currently just noop (maybe that's fine, who knows)
             }
 
+            Syscall::Openat => {
+                let fd = self.x[A0] as i64;
+                let filename = self.memory.read_string_n(self.x[A1], 512);
+                let _flags = self.x[A1];
+
+                log::info!("Opening file fd={fd}, name={filename}");
+                // log::info!("Flags={_flags:b}");
+
+                if filename == "/lib/tls/libc.so.6" {
+                    self.file_descriptors.insert(
+                        LIBC_FILE_DESCRIPTOR,
+                        FileDescriptor {
+                            offset: 0,
+                            data: LIBC_DATA,
+                        },
+                    );
+
+                    self.x[A0] = LIBC_FILE_DESCRIPTOR as u64;
+                } else if filename == "/lib/tls/libstdc++.so.6" {
+                    self.file_descriptors.insert(
+                        LIBCPP_FILE_DESCRIPTOR,
+                        FileDescriptor {
+                            offset: 0,
+                            data: LIBCPP_DATA,
+                        },
+                    );
+
+                    self.x[A0] = LIBCPP_FILE_DESCRIPTOR as u64;
+                } else if filename == "/lib/tls/libm.so.6" {
+                    self.file_descriptors.insert(
+                        LIBM_FILE_DESCRIPTOR,
+                        FileDescriptor {
+                            offset: 0,
+                            data: LIBM_DATA,
+                        },
+                    );
+
+                    self.x[A0] = LIBM_FILE_DESCRIPTOR as u64;
+                } else if filename == "/lib/tls/libgcc_s.so.1" {
+                    self.file_descriptors.insert(
+                        LIBGCCS_FILE_DESCRIPTOR,
+                        FileDescriptor {
+                            offset: 0,
+                            data: LIBGCCS_DATA,
+                        },
+                    );
+
+                    self.x[A0] = LIBGCCS_FILE_DESCRIPTOR as u64;
+                } else {
+                    self.x[A0] = (-1i64) as u64;
+                }
+            }
+
+            Syscall::Close => {
+                let fd = self.x[A0] as i64;
+
+                if self.file_descriptors.remove(&fd).is_some() {
+                    self.x[A0] = 0;
+                } else {
+                    self.x[A0] = -1i64 as u64;
+                }
+            }
+
+            Syscall::Read => {
+                let fd = self.x[A0] as i64;
+                let buf = self.x[A1];
+                let count = self.x[A2];
+
+                log::info!("Reading {count} bytes from file fd={fd} to addr={buf:x}");
+
+                if let Some(entry) = self.file_descriptors.get_mut(&fd) {
+                    self.x[A0] = self.memory.read_file(entry, buf, count) as u64;
+                } else {
+                    self.x[A0] = -1i64 as u64;
+                }
+            }
+
             Syscall::Write => {
-                assert!(self.x[A0] <= 2);
+                let fd = self.x[A0];
+                assert!(fd <= 2);
 
                 let ptr = self.x[A1];
                 let len = self.x[A2];
@@ -323,15 +440,11 @@ impl Emulator {
                 let buf_addr = self.x[A2];
                 let bufsize = self.x[A3];
 
-                let s = self.memory.read_string(addr);
-                // println!(
-                //     "READLINKAT: {:?} into buffer at 0x{:x}, size={}",
-                //     s, buf_addr, bufsize
-                // );
+                let s = self.memory.read_string_n(addr, 512);
 
                 if s == "/proc/self/exe" {
-                    self.memory.write_string_n(b"/prog\0", buf_addr, bufsize);
-                    self.x[A0] = 6;
+                    self.memory.write_n(b"/prog\0", buf_addr, bufsize);
+                    self.x[A0] = 5;
                 } else {
                     self.x[A0] = -1i64 as u64;
                     panic!("Arbitrary file reading is not supported... YAHHH!");
@@ -351,9 +464,20 @@ impl Emulator {
             }
 
             Syscall::Futex => {
+                let uaddr = self.x[A0];
+                let futex_op = self.x[A1];
+                let val = self.x[A2];
+                let _timeout_addr = self.x[A3];
+                let _val3 = self.x[A4];
+
+                log::info!("futex_op = {futex_op} val={val}");
+
+                // FUTEX_WAIT
+                if futex_op == 128 {
+                    self.memory.store_u64(uaddr, 0);
+                }
+
                 self.x[A0] = 0;
-                self.memory.store_u64(self.x[A5], 0);
-                // self.x[A0] = 0;
             }
 
             Syscall::SetRobustList => {
@@ -366,6 +490,10 @@ impl Emulator {
 
             Syscall::Tgkill => {
                 self.x[A0] = -1i64 as u64;
+            }
+
+            Syscall::RtSigaction => {
+                self.x[A0] = 0;
             }
 
             Syscall::RtSigprocmask => {
@@ -381,11 +509,46 @@ impl Emulator {
             }
 
             Syscall::Brk => {
+                let addr_before = self.memory.heap_pointer;
+
                 self.x[A0] = self.memory.brk(arg);
+
+                log::info!(
+                    "Allocated {} bytes of memory to addr=0x{addr_before:x}",
+                    self.x[A0] - addr_before
+                );
+            }
+
+            Syscall::Munmap => {
+                // who needs to free memory
+                self.x[A0] = 0;
             }
 
             Syscall::Mmap => {
-                self.x[A0] = self.memory.mmap(self.x[A1]);
+                let addr = self.x[A0];
+                let len = self.x[A1];
+                let _prot = self.x[A2];
+                let flags = self.x[A3];
+                let fd = self.x[A4] as i64;
+                let offset = self.x[A5];
+
+                log::info!(
+                    "mmap: Allocating {len} bytes fd={}, offset={offset} requested addr={addr:x} flags={flags}",
+                    fd as i64
+                );
+
+                if fd == -1 {
+                    // Only give address if MMAP_FIXED
+                    if (flags & 0x10) != 0 {
+                        self.x[A0] = self.memory.mmap(addr, len) as u64;
+                    } else {
+                        self.x[A0] = self.memory.mmap(0, len) as u64;
+                    }
+                } else if let Some(descriptor) = self.file_descriptors.get_mut(&fd) {
+                    self.x[A0] = self.memory.mmap_file(descriptor, addr, offset, len) as u64;
+                } else {
+                    self.x[A0] = -1i64 as u64;
+                }
             }
 
             Syscall::Mprotect => {
@@ -408,7 +571,19 @@ impl Emulator {
                 self.x[A0] = buflen;
             }
             Syscall::Newfstatat => {
-                self.x[A0] = 0;
+                let fd = self.x[A0] as i64;
+                let pathname_ptr = self.x[A1];
+                let _statbuf = self.x[A2];
+                let flags = self.x[A3];
+
+                let pathname = self.memory.read_string_n(pathname_ptr, 512);
+                log::info!("newfstatat for fd={fd} path=\"{pathname}\" flags={flags}");
+
+                if fd == -1 {
+                    self.x[A0] = 0;
+                } else {
+                    self.x[A0] = 0;
+                }
             }
             Syscall::SchedYield => {
                 self.x[A0] = 0;
@@ -429,6 +604,7 @@ impl Emulator {
         let (inst, incr) = self.fetch();
 
         log::debug!("{:3} {:05x} {}", self.fuel_counter, self.pc, inst);
+        // self.print_registers();
 
         self.execute(inst, incr as u64);
 
@@ -459,7 +635,7 @@ impl Emulator {
                 self.syscall(id);
             }
             Inst::Error(e) => {
-                panic!("{e}");
+                panic!("{e:x}");
             }
             Inst::Lui { rd, imm } => {
                 self.x[rd] = imm as u64;
@@ -468,10 +644,16 @@ impl Emulator {
                 let addr = self.x[rs1].wrapping_add(offset as u64);
 
                 self.x[rd] = self.memory.load_u64(addr);
+
+                log::debug!("addr = {addr:x}, value = 0x{:x}", self.x[rd]);
             }
             Inst::Fld { rd, rs1, offset } => {
                 let addr = self.x[rs1].wrapping_add(offset as u64);
                 self.f[rd] = f64::from_bits(self.memory.load_u64(addr));
+            }
+            Inst::Flw { rd, rs1, offset } => {
+                let addr = self.x[rs1].wrapping_add(offset as u64);
+                self.f[rd] = f32::from_bits(self.memory.load_u32(addr)) as f64;
             }
             Inst::Lw { rd, rs1, offset } => {
                 let addr = self.x[rs1].wrapping_add(offset as u64);
@@ -492,14 +674,21 @@ impl Emulator {
             Inst::Lbu { rd, rs1, offset } => {
                 let addr = self.x[rs1].wrapping_add(offset as u64);
                 self.x[rd] = self.memory.load_u8(addr) as u64;
+                log::debug!("addr = {addr:x}, value = {:x}", self.x[rd]);
             }
             Inst::Sd { rs1, rs2, offset } => {
                 let addr = self.x[rs1].wrapping_add(offset as u64);
+                log::debug!("addr = {addr:x}, value = 0x{:x}", self.x[rs2]);
+
                 self.memory.store_u64(addr, self.x[rs2]);
             }
             Inst::Fsd { rs1, rs2, offset } => {
                 let addr = self.x[rs1].wrapping_add(offset as u64);
                 self.memory.store_u64(addr, self.f[rs2].to_bits());
+            }
+            Inst::Fsw { rs1, rs2, offset } => {
+                let addr = self.x[rs1].wrapping_add(offset as u64);
+                self.memory.store_u32(addr, (self.f[rs2] as f32).to_bits());
             }
             Inst::Sw { rs1, rs2, offset } => {
                 let addr = self.x[rs1].wrapping_add(offset as u64);
@@ -544,7 +733,7 @@ impl Emulator {
                 self.x[rd] = ((self.x[rs1] as u32).wrapping_shl(shamt)) as u64;
             }
             Inst::Srl { rd, rs1, rs2 } => {
-                self.x[rd] = self.x[rs1].wrapping_shl(self.x[rs2] as u32);
+                self.x[rd] = self.x[rs1].wrapping_shr(self.x[rs2] as u32);
             }
             Inst::Srlw { rd, rs1, rs2 } => {
                 self.x[rd] = ((self.x[rs1] as u32).wrapping_shr(self.x[rs2] as u32)) as i32 as u64;
@@ -677,14 +866,20 @@ impl Emulator {
                 self.x[rd] = ((self.x[rs1] as u32) % (self.x[rs2] as u32)) as i32 as u64;
             }
             Inst::Amoswapw { rd, rs1, rs2 } => {
+                log::debug!("amoswapw: addr = {:x}", self.x[rs1]);
+
                 self.x[rd] = self.memory.load_u32(self.x[rs1]) as i32 as u64;
                 self.memory.store_u32(self.x[rs1], self.x[rs2] as u32);
             }
             Inst::Amoswapd { rd, rs1, rs2 } => {
+                log::debug!("amoswapd: addr = {:x}", self.x[rs1]);
+
                 self.x[rd] = self.memory.load_u64(self.x[rs1]);
                 self.memory.store_u64(self.x[rs1], self.x[rs2]);
             }
             Inst::Amoaddw { rd, rs1, rs2 } => {
+                log::debug!("amoaddw: addr = {:x}", self.x[rs1]);
+
                 self.x[rd] = self.memory.load_u32(self.x[rs1]) as i32 as u64;
                 self.memory.store_u32(
                     self.x[rs1],
@@ -692,6 +887,8 @@ impl Emulator {
                 );
             }
             Inst::Amoaddd { rd, rs1, rs2 } => {
+                log::debug!("amoaddd: addr = {:x}", self.x[rs1]);
+
                 self.x[rd] = self.memory.load_u64(self.x[rs1]);
                 self.memory
                     .store_u64(self.x[rs1], self.x[rs2].wrapping_add(self.x[rd]));
@@ -741,7 +938,7 @@ mod tests {
     #[test]
     fn lui() {
         let memory = Memory::from_raw(&[]);
-        let mut emulator = Emulator::new(0, memory);
+        let mut emulator = Emulator::new(memory);
 
         // lui a0, 1000
         emulator.execute_raw(0x003e8537);
@@ -758,7 +955,7 @@ mod tests {
             0x12, 0x23, 0x34, 0x56, 0x78, 0x9a, 0xbc, 0xde, //.
             0xef, 0xff, 0xff, 0xff, 0x00, 0x00, 0x00, 0x00, //.
         ]);
-        let mut emulator = Emulator::new(0, memory);
+        let mut emulator = Emulator::new(memory);
 
         // ld a0, 0(x0)
         emulator.execute_raw(0x00003503);
@@ -777,38 +974,38 @@ mod tests {
         assert_eq!(emulator.x[A1], 0x00000000000000ef);
     }
 
-    // #[test]
-    // fn stores() {
-    //     let memory = Memory::from_raw(&[
-    //         0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, //.
-    //         0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, //.
-    //     ]);
-    //     let mut emulator = Emulator::new(0, memory);
-    //     emulator.x[A0] = 0xdebc9a7856342312;
-    //
-    //     // sd a0, 0(zero)
-    //     // ld a1, 0(zero)
-    //     emulator.execute_raw(0x00a03023);
-    //     emulator.execute_raw(0x00003583);
-    //     assert_eq!(emulator.x[A0], emulator.x[A1]);
-    //
-    //     // -32 2s complement
-    //     emulator.x[A0] = 0xfffffffffffffffe;
-    //     // sw a0, 0(zero)
-    //     // lw a1, 0(zero)
-    //     emulator.execute_raw(0x00a02023);
-    //     emulator.execute_raw(0x00002583);
-    //     assert_eq!(emulator.x[A0], emulator.x[A1]);
-    //
-    //     // ld a1, 0(zero)
-    //     emulator.execute_raw(0x00003583);
-    //     assert_ne!(emulator.x[A0], emulator.x[A1]);
-    // }
+    #[test]
+    fn stores() {
+        let memory = Memory::from_raw(&[
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, //.
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, //.
+        ]);
+        let mut emulator = Emulator::new(memory);
+        emulator.x[A0] = 0xdebc9a7856342312;
+
+        // sd a0, 0(zero)
+        // ld a1, 0(zero)
+        emulator.execute_raw(0x00a03023);
+        emulator.execute_raw(0x00003583);
+        assert_eq!(emulator.x[A0], emulator.x[A1]);
+
+        // -32 2s complement
+        emulator.x[A0] = 0xfffffffffffffffe;
+        // sw a0, 0(zero)
+        // lw a1, 0(zero)
+        emulator.execute_raw(0x00a02023);
+        emulator.execute_raw(0x00002583);
+        assert_eq!(emulator.x[A0], emulator.x[A1]);
+
+        // ld a1, 0(zero)
+        emulator.execute_raw(0x00003583);
+        assert_ne!(emulator.x[A0], emulator.x[A1]);
+    }
 
     #[test]
     fn sp_relative() {
         let memory = Memory::from_raw(&[]);
-        let mut emulator = Emulator::new(0, memory);
+        let mut emulator = Emulator::new(memory);
         emulator.x[A0] = 0xdebc9a7856342312;
         let sp_start = emulator.x[SP];
 

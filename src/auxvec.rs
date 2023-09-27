@@ -11,7 +11,7 @@ pub enum Auxv {
     Phent = 4,
     Phnum = 5,
     Pagesz = 6,
-    Baze = 7,
+    Base = 7,
     Flags = 8,
     Entry = 9,
     NotElf = 10,

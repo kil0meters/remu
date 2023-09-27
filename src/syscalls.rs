@@ -7,6 +7,9 @@ use num_derive::FromPrimitive;
 #[derive(FromPrimitive, Debug)]
 pub enum Syscall {
     Faccessat = 48,
+    Openat = 56,
+    Close = 57,
+    Read = 63,
     Write = 64,
     Writev = 66,
     Readlinkat = 78,
@@ -19,10 +22,12 @@ pub enum Syscall {
     ClockGettime = 113,
     SchedYield = 124,
     Tgkill = 131,
+    RtSigaction = 134,
     RtSigprocmask = 135,
     Getpid = 172,
     Gettid = 178,
     Brk = 214,
+    Munmap = 215,
     Mmap = 222,
     Mprotect = 226,
     Prlimit64 = 261,

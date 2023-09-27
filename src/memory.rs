@@ -1,13 +1,14 @@
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 
 use elf::{
-    abi::{DT_SYMBOLIC, PT_DYNAMIC, PT_LOAD},
-    endian::EndianParse,
+    abi::{DT_NEEDED, DT_SYMBOLIC, PT_DYNAMIC, PT_INTERP, PT_LOAD, PT_PHDR, PT_TLS},
+    endian::{AnyEndian, EndianParse},
+    segment::SegmentTable,
     ElfBytes,
 };
 use log::{debug, warn};
 
-use crate::emulator::STACK_START;
+use crate::emulator::{FileDescriptor, STACK_START};
 
 #[derive(Debug)]
 pub struct MemoryRange {
@@ -27,79 +28,184 @@ impl MemoryRange {
     }
 }
 
+pub const PAGESIZE: u64 = 1 << 12;
+pub const PAGE_MASK: u64 = (1 << 12) - 1;
+type MemoryPage = [u8; PAGESIZE as usize];
+
+pub const LD_LINUX_DATA: &'static [u8] = include_bytes!("../res/ld-linux-riscv64-lp64d.so.1");
+pub const LIBC_DATA: &'static [u8] = include_bytes!("../res/libc.so.6");
+pub const LIBCPP_DATA: &'static [u8] = include_bytes!("../res/libstdc++.so");
+pub const LIBM_DATA: &'static [u8] = include_bytes!("../res/libm.so.6");
+pub const LIBGCCS_DATA: &'static [u8] = include_bytes!("../res/libgcc_s.so.1");
+
+pub const LIBC_FILE_DESCRIPTOR: i64 = 10;
+pub const LIBCPP_FILE_DESCRIPTOR: i64 = 11;
+pub const LIBM_FILE_DESCRIPTOR: i64 = 12;
+pub const LIBGCCS_FILE_DESCRIPTOR: i64 = 13;
+
+#[derive(Default)]
+pub struct ProgramHeaderInfo {
+    pub entry: u64,
+    pub address: u64,
+    pub size: u64,
+    pub number: u64,
+}
+
 pub struct Memory {
-    ranges: Box<[MemoryRange]>,
+    pub ranges: Vec<MemoryRange>,
     pub stack: Vec<u8>,
     pub heap: Vec<u8>,
+
+    // the address of entry to the program
+    pub entry: u64,
+
+    pub program_header: ProgramHeaderInfo,
 
     // the address to the end of the heap
     pub heap_pointer: u64,
 
     // probably the best data structure is a self balancing binary search tree where node keys are
     // a range of integers (start and end of memory).
-    pub mmap_regions: VecDeque<MemoryRange>,
+    pub mmap_pages: HashMap<u64, MemoryPage>,
 }
 
 impl Memory {
     pub fn load_elf<T: EndianParse>(elf: ElfBytes<T>) -> Self {
-        let mut ranges = Vec::new();
-
-        let segments = elf.segments().unwrap();
-        let mut data_end = 0;
+        let mut memory = Memory {
+            ranges: Vec::new(),
+            stack: vec![0; 512],
+            heap: Vec::new(),
+            entry: 0,
+            program_header: ProgramHeaderInfo::default(),
+            heap_pointer: 0,
+            mmap_pages: HashMap::new(),
+        };
 
         // load dynamic libraries, if they exist
         // https://blog.k3170makan.com/2018/11/introduction-to-elf-format-part-vii.html
+        // https://www.youtube.com/watch?v=Ss2e6JauS0Y
+        if let Some((dynamic_symbol_table, string_table)) = elf.dynamic_symbol_table().unwrap() {
+            if let Some(dynamic) = elf.dynamic().unwrap() {
+                for x in dynamic {
+                    if x.d_tag == DT_NEEDED {
+                        let obj = string_table.get(x.d_val() as usize).unwrap();
+                        println!("dynamic links with: {}", obj);
+                    }
+                }
 
-        // if let Some(dynamic) = elf.dynamic().unwrap() {
-        //     for x in dynamic {
-        //         if x.d_tag == DT_SYMBOLIC {
-        //         }
-        //         log::info!("{:?}", x);
-        //     }
-        //
-        //     panic!();
-        // }
+                let rela_header = elf.section_header_by_name(".rela.plt").unwrap().unwrap();
+                let rela_data = elf.section_data_as_relas(&rela_header).unwrap();
 
+                let mut symbols_to_link = Vec::new();
+                for rel in rela_data {
+                    let symbol = dynamic_symbol_table.get(rel.r_sym as usize).unwrap();
+                    let symbol_name = string_table.get(symbol.st_name as usize).unwrap();
+
+                    symbols_to_link.push((symbol_name, rel.r_offset));
+                }
+
+                // let libc_elf = ElfBytes::<AnyEndian>::minimal_parse(LIBC_DATA).unwrap();
+                // let (libc_symbol_table, libc_string_table) =
+                //     libc_elf.dynamic_symbol_table().unwrap().unwrap();
+                //
+                // println!("{:?}", symbols_to_link);
+                //
+                // for (symbol_name, offset) in symbols_to_link {
+                //     for libc_symbol in libc_symbol_table.iter() {
+                //         let libc_symbol_name =
+                //             libc_string_table.get(libc_symbol.st_name as usize).unwrap();
+                //
+                //         if libc_symbol_name == symbol_name {
+                //             log::info!("dynamically linking {symbol_name}({offset:x}) => libc::{libc_symbol_name}({:x})", libc_symbol.st_value);
+                //
+                //             memory.store_u64(offset, libc_symbol.st_value);
+                //         }
+                //     }
+                // }
+
+                let ld_elf = ElfBytes::<AnyEndian>::minimal_parse(LD_LINUX_DATA).unwrap();
+                // let (ld_symbol_table, ld_string_table) =
+                //     ld_elf.dynamic_symbol_table().unwrap().unwrap();
+                let (ld_symbol_table, ld_string_table) = ld_elf.symbol_table().unwrap().unwrap();
+
+                let dl_runtime_resolve_sym = ld_symbol_table
+                    .iter()
+                    .find(|ld_symbol| {
+                        let ld_symbol_name = ld_string_table.get(ld_symbol.st_name as usize);
+                        if let Ok("_dl_runtime_resolve") = ld_symbol_name {
+                            true
+                        } else {
+                            false
+                        }
+                    })
+                    .expect("Failed to find _dl_runtime_resolve in dynamic linker");
+
+                log::info!("Loading dynamically linked executable.");
+
+                let ld_offset = 0x80000000;
+
+                memory.map_segments(ld_offset, &ld_elf);
+                memory.map_segments(0x0, &elf);
+
+                memory.entry = ld_offset + ld_elf.ehdr.e_entry;
+
+                // TODO: make this work dynamically
+                memory.store_u64(8200, ld_offset + dl_runtime_resolve_sym.st_value);
+            }
+        } else {
+            log::info!("Loading statically linked executable.");
+            memory.map_segments(0, &elf);
+            memory.entry = elf.ehdr.e_entry;
+        }
+
+        memory
+    }
+
+    fn map_segments<'data, E: EndianParse>(&mut self, offset: u64, elf: &ElfBytes<'data, E>) {
+        let mut data_end = self.heap_pointer.max(offset);
+
+        let segments = elf.segments().unwrap();
         for segment in segments {
             match segment.p_type {
-                PT_LOAD => {
-                    let mut data = Vec::from(elf.segment_data(&segment).unwrap());
+                PT_LOAD | PT_PHDR | PT_TLS | PT_DYNAMIC => {
+                    if segment.p_type == PT_PHDR {
+                        self.program_header.size = segment.p_memsz;
+                        self.program_header.address = offset + segment.p_vaddr;
+                        self.program_header.number = elf.ehdr.e_phnum as u64;
+                        self.program_header.entry = elf.ehdr.e_entry as u64;
+                    }
 
+                    let mut data = Vec::from(elf.segment_data(&segment).unwrap());
                     assert!(data.len() as u64 <= segment.p_memsz);
 
                     data.resize(segment.p_memsz as usize, 0);
 
                     debug!(
-                        "Mapping {} bytes onto offset {}. p_type = {}",
-                        segment.p_memsz, segment.p_vaddr, segment.p_type
+                        "Mapping {} bytes onto offset {:x}. p_type = {}",
+                        segment.p_memsz,
+                        offset + segment.p_vaddr,
+                        segment.p_type
                     );
 
                     let range = MemoryRange {
-                        start: segment.p_vaddr,
-                        end: segment.p_vaddr + data.len() as u64,
+                        start: offset + segment.p_vaddr,
+                        end: offset + segment.p_vaddr + data.len() as u64,
                         data: data.into(),
                     };
 
                     data_end = data_end.max(range.end);
-                    ranges.push(range);
+                    self.ranges.push(range);
                 }
-                // PT_DYNAMIC => {
-                //     log::error!("{:?}", segment);
-                // }
+                PT_INTERP => {
+                    log::debug!("interp: {segment:x?}");
+                }
                 _ => {
-                    warn!("Unknown p_type: {segment:?}");
+                    warn!("Unknown p_type: {segment:x?}");
                 }
             }
         }
 
-        Memory {
-            ranges: ranges.into_boxed_slice(),
-            stack: vec![0; 512],
-            heap: Vec::new(),
-
-            heap_pointer: data_end,
-            mmap_regions: VecDeque::new(),
-        }
+        self.heap_pointer = data_end;
     }
 
     pub fn get_text_range(&self) -> (u64, u64) {
@@ -118,8 +224,10 @@ impl Memory {
             ranges: [data].into(),
             stack: vec![0; 512],
             heap: Vec::new(),
+            entry: 0,
             heap_pointer: data_end,
-            mmap_regions: VecDeque::new(),
+            mmap_pages: HashMap::new(),
+            program_header: Default::default(),
         }
     }
 
@@ -139,31 +247,57 @@ impl Memory {
         return self.heap_pointer;
     }
 
-    pub fn mmap(&mut self, size: u64) -> u64 {
-        // how do we pick and address? I don't know.
-
-        let mut region_start = 0x2000000000000000u64;
-
-        // put region after previous region
-        let mut max_addr = 0;
-        for region in &self.mmap_regions {
-            max_addr = max_addr.max(region.end);
+    pub fn mmap(&mut self, addr: u64, size: u64) -> i64 {
+        // if size is not multiple of PAGESIZE, error
+        if addr % PAGESIZE != 0 {
+            return -1;
         }
 
-        region_start = region_start.max(max_addr);
+        let addr = if addr == 0 {
+            let region_start = 0x2000000000000000u64;
 
-        let region = MemoryRange {
-            start: region_start,
-            end: region_start + size,
-            data: vec![0; size as usize].into_boxed_slice(),
+            // put region after previous region
+            let mut max_addr = 0;
+            for (region, _) in &self.mmap_pages {
+                max_addr = max_addr.max(region + PAGESIZE);
+            }
+
+            region_start.max(max_addr)
+        } else {
+            // TODO, ensure not overlapping and shit.
+            addr
         };
 
-        println!("MMAP REGION AT:  {}", region.start);
-        println!("MMAP REGION END: {}", region.end);
+        log::info!("MMAP REGION: 0x{:x}-0x{:x}", addr, addr + size);
 
-        self.mmap_regions.push_back(region);
+        // This overwrites the data if the addr specified happens to overlap with an existing
+        // mapping. But this is the _correct_ behavior according to `man 2 mmap`
+        for addr in (addr..(addr + size)).step_by(PAGESIZE as usize) {
+            self.mmap_pages.insert(addr, [0; 4096]);
+        }
 
-        region_start
+        addr as i64
+    }
+
+    pub fn mmap_file(
+        &mut self,
+        descriptor: &FileDescriptor,
+        addr: u64,
+        offset: u64,
+        len: u64,
+    ) -> i64 {
+        // TODO: assert offset is multiple of pagesize
+        let data = &descriptor.data[(offset as usize)..(offset as usize + len as usize)];
+
+        assert_eq!(data.len() as u64, len);
+
+        let addr_start = self.mmap(addr, data.len() as u64);
+
+        if addr_start >= 0 {
+            self.write_n(data, addr_start as u64, len);
+        }
+
+        addr_start
     }
 
     // pub fn munmap(&mut self, ptr: u64) -> u64 {
@@ -189,6 +323,10 @@ impl Memory {
         unsafe { self.data_ptr(index).cast::<u16>().read_unaligned() }
     }
 
+    pub fn load_u8(&mut self, index: u64) -> u8 {
+        unsafe { *self.data_ptr(index) }
+    }
+
     unsafe fn data_ptr(&mut self, idx: u64) -> *mut u8 {
         // try loading from executable mapped memory ranges
         for range in self.ranges.iter_mut() {
@@ -197,11 +335,11 @@ impl Memory {
             }
         }
 
-        // try loading from dynamic mmap regions
-        for range in self.mmap_regions.iter_mut() {
-            if range.in_range(idx) {
-                return range.fetch_byte(idx);
-            }
+        // try loading from a mmap page
+        let phys_addr = idx & !PAGE_MASK;
+        if let Some(page) = self.mmap_pages.get_mut(&phys_addr) {
+            let virt_addr = idx & PAGE_MASK;
+            return page.as_mut_ptr().add(virt_addr as usize);
         }
 
         let heap_start = self.heap_pointer - self.heap.len() as u64;
@@ -213,6 +351,10 @@ impl Memory {
             let mut stack_end = STACK_START - self.stack.len() as u64;
 
             while stack_end > idx {
+                if stack_end - idx >= 0xfffff {
+                    panic!("Invalid memory location: {idx:x}");
+                }
+
                 // resize and shift
                 // manual vec implementation here
                 self.stack.extend_from_within(0..self.stack.len());
@@ -224,11 +366,6 @@ impl Memory {
         } else {
             panic!("Attempted to load to address not mapped to memoery: {idx:x}");
         }
-    }
-
-    /// Has to be mutable because there's a chance loading a byte resizes the stack apparently?
-    pub fn load_u8(&mut self, idx: u64) -> u8 {
-        unsafe { *self.data_ptr(idx) }
     }
 
     pub fn store_u64(&mut self, idx: u64, data: u64) {
@@ -247,9 +384,9 @@ impl Memory {
         unsafe { self.data_ptr(idx).write_unaligned(data) }
     }
 
-    pub fn write_string_n(&mut self, s: &[u8], addr: u64, len: u64) {
-        for i in 0..(len.min(s.len() as u64)) {
-            self.store_u8(addr + i, s[i as usize]);
+    pub fn write_n(&mut self, s: &[u8], addr: u64, len: u64) {
+        for (i, b) in s.iter().take(len as usize).enumerate() {
+            self.store_u8(addr + i as u64, *b);
         }
     }
 
@@ -259,22 +396,8 @@ impl Memory {
         for _ in 0..len {
             let c = self.load_u8(addr);
             addr += 1;
-            data.push(c);
-        }
 
-        let s = String::from_utf8_lossy(&data);
-        s.into()
-    }
-
-    // super unsafe, probably requires null termination
-    pub fn read_string(&mut self, mut addr: u64) -> String {
-        let mut data = Vec::new();
-        // read bytes until we get null
-        loop {
-            let c = self.load_u8(addr);
-            addr += 1;
-
-            if c == 0 {
+            if c == b'\0' {
                 break;
             }
 
@@ -283,5 +406,39 @@ impl Memory {
 
         let s = String::from_utf8_lossy(&data);
         s.into()
+    }
+
+    // super unsafe, probably requires null termination
+    // pub unsafe fn read_string(&mut self, mut addr: u64) -> String {
+    //     let mut data = Vec::new();
+    //     // read bytes until we get null
+    //     loop {
+    //         let c = self.load_u8(addr);
+    //         addr += 1;
+    //
+    //         if c == 0 {
+    //             break;
+    //         }
+    //
+    //         data.push(c);
+    //     }
+    //
+    //     let s = String::from_utf8_lossy(&data);
+    //     s.into()
+    // }
+
+    pub fn read_file(&mut self, file_descriptor: &mut FileDescriptor, buf: u64, count: u64) -> i64 {
+        let o = file_descriptor.offset as usize;
+        let max = (o + count as usize).min(file_descriptor.data.len());
+
+        let data = &file_descriptor.data[o..max];
+
+        self.write_n(data, buf, count);
+
+        if data.len() as u64 != count {
+            0
+        } else {
+            data.len() as i64
+        }
     }
 }

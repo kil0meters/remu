@@ -1,6 +1,6 @@
 use std::fmt::Display;
 
-use crate::emulator::{FReg, Reg, SP};
+use crate::emulator::{FReg, Reg, RA, SP};
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub enum Inst {
@@ -90,7 +90,9 @@ pub enum Inst {
 
     // FLOATING POINT
     Fsd { rs1: Reg, rs2: FReg, offset: i32 },
+    Fsw { rs1: Reg, rs2: FReg, offset: i32 },
     Fld { rd: FReg, rs1: Reg, offset: i32 },
+    Flw { rd: FReg, rs1: Reg, offset: i32 },
 }
 
 impl Display for Inst {
@@ -169,7 +171,9 @@ impl Display for Inst {
             Inst::Scw { rd, rs1, rs2 } => write!(f, "sc.w  {rd}, {rs2},({rs1})"),
             Inst::Scd { rd, rs1, rs2 } => write!(f, "sc.d  {rd}, {rs2},({rs1})"),
             Inst::Fsd { rs1, rs2, offset } => write!(f, "fsd   {rs2}, {offset}({rs1})"),
+            Inst::Fsw { rs1, rs2, offset } => write!(f, "fsw   {rs2}, {offset}({rs1})"),
             Inst::Fld { rs1, rd, offset } => write!(f, "fld   {rd}, {offset}({rs1})"),
+            Inst::Flw { rs1, rd, offset } => write!(f, "flw   {rd}, {offset}({rs1})"),
         }
     }
 }
@@ -191,6 +195,7 @@ impl Inst {
         let rs2 = Reg(((inst >> 20) & 0b11111) as u8);
         let funct3 = (inst >> 12) & 0b111;
         let funct5 = (inst >> 27) & 0b11111;
+        let funct6 = (inst >> 26) & 0b111111;
         let funct7 = (inst >> 25) & 0b1111111;
 
         match opcode {
@@ -210,6 +215,11 @@ impl Inst {
             0b0000111 => {
                 let offset = (inst & 0xFFF00000) as i32 >> 20;
                 match funct3 {
+                    0b010 => Inst::Flw {
+                        rd: FReg(rd.0),
+                        rs1,
+                        offset,
+                    },
                     0b011 => Inst::Fld {
                         rd: FReg(rd.0),
                         rs1,
@@ -224,7 +234,7 @@ impl Inst {
                 match funct3 {
                     0b000 => Inst::Addi { rd, rs1, imm },
                     0b001 => {
-                        let shamt = (inst >> 20) & 0b11111;
+                        let shamt = (inst >> 20) & 0b111111;
                         Inst::Slli { rd, rs1, shamt }
                     }
                     0b010 => Inst::Slti { rd, rs1, imm },
@@ -234,10 +244,17 @@ impl Inst {
                         imm: imm as u32,
                     },
                     0b100 => Inst::Xori { rd, rs1, imm },
-                    0b101 => {
-                        let shamt = (inst >> 20) & 0b11111;
-                        Inst::Srli { rd, rs1, shamt }
-                    }
+                    0b101 => match funct6 {
+                        0b000000 => {
+                            let shamt = (inst >> 20) & 0b111111;
+                            Inst::Srli { rd, rs1, shamt }
+                        }
+                        0b010000 => {
+                            let shamt = (inst >> 20) & 0b111111;
+                            Inst::Srai { rd, rs1, shamt }
+                        }
+                        _ => Inst::Error(inst),
+                    },
                     0b110 => Inst::Ori { rd, rs1, imm },
                     0b111 => Inst::Andi { rd, rs1, imm },
                     _ => Inst::Error(inst),
@@ -257,13 +274,13 @@ impl Inst {
                 }
                 0b001 => match funct7 {
                     0b0000000 => {
-                        let shamt = ((inst >> 20) & 0b111111) as u32;
+                        let shamt = ((inst >> 20) & 0b11111) as u32;
                         Inst::Slliw { rd, rs1, shamt }
                     }
                     _ => Inst::Error(inst),
                 },
                 0b101 => {
-                    let shamt = ((inst >> 20) & 0b111111) as u32;
+                    let shamt = ((inst >> 20) & 0b11111) as u32;
                     match funct7 {
                         0b0000000 => Inst::Srliw { rd, rs1, shamt },
                         0b0100000 => Inst::Sraiw { rd, rs1, shamt },
@@ -288,17 +305,21 @@ impl Inst {
             }
 
             0b0100111 => {
-                match funct3 {
-                    0b011 => {
-                        let offset = ((inst & 0b11111110000000000000000000000000) as i32) >> 20 // imm[11:5]
-                        | (inst & 0b111110000000) as i32 >> 7; // imm[4:0]
+                let offset = ((inst & 0b11111110000000000000000000000000) as i32) >> 20 // imm[11:5]
+                           | (inst & 0b111110000000) as i32 >> 7; // imm[4:0]
 
-                        Inst::Fsd {
-                            rs2: FReg(rs2.0),
-                            rs1,
-                            offset,
-                        }
-                    }
+                match funct3 {
+                    0b010 => Inst::Fsw {
+                        rs2: FReg(rs2.0),
+                        rs1,
+                        offset,
+                    },
+
+                    0b011 => Inst::Fsd {
+                        rs2: FReg(rs2.0),
+                        rs1,
+                        offset,
+                    },
                     _ => Inst::Error(inst),
                 }
             }
@@ -424,7 +445,7 @@ impl Inst {
             }
 
             0b1100111 => {
-                let offset = (inst & 0xFFFFF000) as i32 >> 12;
+                let offset = (inst & 0xFFF00000) as i32 >> 12;
                 match funct3 {
                     0b000 => Inst::Jalr { rd, rs1, offset },
                     _ => Inst::Error(inst),
@@ -432,11 +453,10 @@ impl Inst {
             }
 
             0b1101111 => {
-                // imm[20|10:1|11|19:12] = inst[31|30:21|20|19:12]
-                let offset = ((inst & 0x80000000) as i32 >> 11) // imm[20]
-                           | (inst & 0xff000) as i32 // imm[19:12]
-                           | ((inst >> 9) & 0x800) as i32 // imm[11]
-                           | ((inst >> 20) & 0x7fe) as i32; // imm[10:1]
+                let offset = (inst & 0b11111111000000000000) as i32 // imm[19:12]
+                           | ((inst & 0b100000000000000000000) >> 9) as i32 // imm[11]
+                           | ((inst & 0b1111111111000000000000000000000) >> 20) as i32 // imm[10:1]
+                           | ((inst & 0b10000000000000000000000000000000) as i32) >> 11; // imm[20]
 
                 Inst::Jal { rd, offset }
             }
@@ -558,6 +578,8 @@ impl Inst {
             0b01 => {
                 match funct3 {
                     0b000 => {
+                        // C.ADDI
+
                         let imm = (((inst & 0b1000000000000) << 3) as i16 >> 10) // imm[5]
                                 | (inst & 0b1111100) as i16 >> 2; // imm[4:0]
                         let rd = Reg(((inst >> 7) & 0b11111) as u8);
@@ -569,6 +591,8 @@ impl Inst {
                         }
                     }
                     0b001 => {
+                        // C.ADDIW
+
                         let imm = (((inst & 0b1000000000000) << 3) as i16 >> 10) // imm[5]
                                 | (inst & 0b1111100) as i16 >> 2; // imm[4:0]
                         let rd = Reg(((inst >> 7) & 0b11111) as u8);
@@ -580,6 +604,8 @@ impl Inst {
                         }
                     }
                     0b010 => {
+                        // C.LI
+
                         let imm = (((inst & 0b1000000000000) << 3) as i16 >> 10) // imm[5]
                                 | (inst & 0b1111100) as i16 >> 2; // imm[4:0]
                         let rd = Reg(((inst >> 7) & 0b11111) as u8);
@@ -624,6 +650,8 @@ impl Inst {
                                 let shamt = (inst & 0b1000000000000) >> 7 // imm[5]
                                           | (inst & 0b1111100) >> 2; // imm[4:0]
 
+                                assert_ne!(shamt, 0);
+
                                 if shamt == 0 {
                                     Inst::Error(inst as u32)
                                 } else {
@@ -635,9 +663,12 @@ impl Inst {
                                 }
                             }
 
+                            // C.SRAI
                             0b01 => {
                                 let shamt = (inst & 0b1000000000000) >> 7 // imm[5]
                                           | (inst & 0b1111100) >> 2; // imm[4:0]
+
+                                assert_ne!(shamt, 0);
 
                                 if shamt == 0 {
                                     Inst::Error(inst as u32)
@@ -732,14 +763,30 @@ impl Inst {
             0b10 => {
                 match funct3 {
                     0b000 => {
+                        // C.SLLI
                         let rd = Reg(((inst >> 7) & 0b11111) as u8);
                         let shamt = (inst & 0b1000000000000) >> 7 // imm[5]
                                   | (inst & 0b1111100) >> 2; // imm[4:0]
+
+                        assert_ne!(shamt, 0);
 
                         Inst::Slli {
                             rd,
                             rs1: rd,
                             shamt: shamt as u32,
+                        }
+                    }
+                    0b001 => {
+                        // C.FLDSP
+                        let rd = FReg(((inst >> 7) & 0b11111) as u8);
+                        let offset = (inst & 0b1000000000000) >> 7 // imm[5]
+                                   | (inst & 0b11100) << 4 // imm[8:6]
+                                   | (inst & 0b1100000) >> 2; // imm[4:3]
+
+                        Inst::Fld {
+                            rd,
+                            rs1: SP,
+                            offset: offset as i32,
                         }
                     }
                     0b010 => {
@@ -750,7 +797,6 @@ impl Inst {
 
                         // C.LWSP
                         if rd != Reg(0) {
-                            // C.LDSP
                             Inst::Lw {
                                 rd,
                                 rs1: SP,
@@ -761,13 +807,14 @@ impl Inst {
                         }
                     }
                     0b011 => {
+                        // C.LDSP
+
                         let rd = Reg(((inst >> 7) & 0b11111) as u8);
                         let imm = (inst & 0b1000000000000) >> 7 // imm[5]
                                 | (inst & 0b11100) << 4 // imm[8:6]
                                 | (inst & 0b1100000) >> 2; // imm[4:3]
 
                         if rd != Reg(0) {
-                            // C.LDSP
                             Inst::Ld {
                                 rd,
                                 rs1: SP,
@@ -801,18 +848,22 @@ impl Inst {
                         // C.ADD - Add
                         else if imm == 1 && rs1 != Reg(0) && rs2 != Reg(0) {
                             Inst::Add { rd: rs1, rs1, rs2 }
-                        } else if imm == 1 && rs1 != Reg(0) && rs2 == Reg(0) {
+                        }
+                        // C.JALR
+                        else if imm == 1 && rs1 != Reg(0) && rs2 == Reg(0) {
                             Inst::Jalr {
-                                rd: Reg(1),
+                                rd: RA,
                                 rs1,
                                 offset: 0,
                             }
-                        } else {
+                        }
+                        // C.EBREAK
+                        else {
                             Inst::Ebreak
                         }
                     }
                     0b101 => {
-                        // C.FDSP
+                        // C.FSDSP
 
                         let rs2 = FReg(((inst >> 2) & 0b11111) as u8);
                         let imm = (inst & 0b1110000000) >> 1 // imm[8:6]
@@ -825,6 +876,8 @@ impl Inst {
                         }
                     }
                     0b110 => {
+                        // SWSP
+
                         let imm = (inst & 0b110000000) >> 1 // imm[7:6]
                                 | (inst & 0b1111000000000) >> 7; // imm[5:2]
                         let rs2 = Reg(((inst >> 2) & 0b11111) as u8);
@@ -837,14 +890,15 @@ impl Inst {
                     }
                     0b111 => {
                         // C.SDSP - not C.SWSP since we are emulating RV64C
-                        let offset =
-                            (((inst >> 7) & 0b111000) | ((inst >> 1) & 0b111000000)) as i32;
+                        let offset = (inst & 0b1110000000) >> 1 // imm[8:6]
+                                   | (inst & 0b1110000000000) >> 7; // imm[5:3]
+
                         let rs2 = Reg(((inst >> 2) & 0b11111) as u8);
 
                         Inst::Sd {
                             rs1: SP,
                             rs2,
-                            offset,
+                            offset: offset as i32,
                         }
                     }
                     _ => Inst::Error(inst as u32),
@@ -886,6 +940,29 @@ mod tests {
     }
 
     #[test]
+    fn compressed_branch_decoding() {
+        let (inst, _) = Inst::decode(0x0000dc85);
+        assert_eq!(
+            inst,
+            Inst::Beq {
+                rs1: S1,
+                rs2: Reg(0),
+                offset: -200,
+            }
+        );
+
+        let (inst, _) = Inst::decode(0x0000fc85);
+        assert_eq!(
+            inst,
+            Inst::Bne {
+                rs1: S1,
+                rs2: Reg(0),
+                offset: -200,
+            }
+        );
+    }
+
+    #[test]
     fn xori_decoding() {
         let (inst, _) = Inst::decode(0xfff64613);
         assert_eq!(
@@ -899,7 +976,7 @@ mod tests {
     }
 
     #[test]
-    fn srliw_decoding() {
+    fn srliw_srli_decoding() {
         let (inst, _) = Inst::decode(0x0087d49b);
         assert_eq!(
             inst,
@@ -907,6 +984,26 @@ mod tests {
                 rd: S1,
                 rs1: A5,
                 shamt: 8,
+            }
+        );
+
+        let (inst, _) = Inst::decode(0x0307d813);
+        assert_eq!(
+            inst,
+            Inst::Srli {
+                rd: A6,
+                rs1: A5,
+                shamt: 48
+            }
+        );
+
+        let (inst, _) = Inst::decode(0x02091793);
+        assert_eq!(
+            inst,
+            Inst::Slli {
+                rd: A5,
+                rs1: S2,
+                shamt: 32
             }
         );
     }

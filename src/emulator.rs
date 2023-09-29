@@ -178,6 +178,7 @@ pub struct Emulator {
 
     /// The number of instructions executed over the lifecycle of the emulator.
     pub fuel_counter: u64,
+    pub max_memory: u64,
     // Similar to fuel_counter, but also takes into account intruction level parallelism and cache misses.
     // performance_counter: u64,
     exit_code: Option<u64>,
@@ -199,6 +200,7 @@ impl Emulator {
             memory,
             exit_code: None,
             fuel_counter: 0,
+            max_memory: 0,
             // performance_counter: 0,
         };
 
@@ -585,6 +587,7 @@ impl Emulator {
 
         self.execute(inst, incr as u64);
 
+        self.max_memory = self.max_memory.max(self.memory.usage());
         self.fuel_counter += 1;
         self.exit_code
     }
@@ -612,7 +615,7 @@ impl Emulator {
                 self.syscall(id);
             }
             Inst::Error(e) => {
-                panic!("{e:x}");
+                log::error!("unknown instruction: {e:x}");
             }
             Inst::Lui { rd, imm } => {
                 self.x[rd] = imm as u64;
@@ -898,6 +901,26 @@ impl Emulator {
             Inst::Scd { rd, rs1, rs2 } => {
                 self.x[rd] = 0;
                 self.memory.store_u64(self.x[rs1], self.x[rs2]);
+            }
+            Inst::Fcvtdlu { rd, rs1, rm: _rm } => {
+                // ignore rounding mode for now, super incorrect
+                // TODO: fix
+                self.x[rd] = self.f[rs1] as u64;
+            }
+            Inst::Fcvtds { rd, rs1, rm: _rm } => {
+                // ignore rounding mode for now, super incorrect
+                // TODO: fix
+                self.x[rd] = self.f[rs1] as u64;
+            }
+            Inst::Fled { rd, rs1, rs2 } => {
+                if self.f[rs1] < self.f[rs2] {
+                    self.x[rd] = 1;
+                } else {
+                    self.x[rd] = 0;
+                }
+            }
+            Inst::Fdivd { rd, rs1, rs2 } => {
+                self.f[rd] = self.f[rs1] / self.f[rs2];
             }
         }
 

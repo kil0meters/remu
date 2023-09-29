@@ -58,6 +58,7 @@ fn main() -> Result<()> {
             println!("------------------------------");
             println!("Program exited with code {exit_code}");
             println!("Fuel consumed: {}", emulator.fuel_counter);
+            println!("Peak memory usage: {} bytes", emulator.max_memory);
             break;
         }
     }

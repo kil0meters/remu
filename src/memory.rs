@@ -1,5 +1,5 @@
 use elf::{
-    abi::{DT_NEEDED, PT_DYNAMIC, PT_INTERP, PT_LOAD, PT_PHDR, PT_TLS},
+    abi::{DT_NEEDED, PT_DYNAMIC, PT_INTERP, PT_LOAD, PT_PHDR},
     endian::{AnyEndian, EndianParse},
     ElfBytes,
 };
@@ -157,6 +157,11 @@ impl Memory {
         memory.write_n(data, 0, data.len() as u64);
 
         memory
+    }
+
+    // returns the number of bytes of memory allocated
+    pub fn usage(&self) -> u64 {
+        self.pages.len() as u64 * PAGE_SIZE
     }
 
     pub fn brk(&mut self, new_end: u64) -> u64 {

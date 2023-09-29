@@ -93,6 +93,10 @@ pub enum Inst {
     Fsw { rs1: Reg, rs2: FReg, offset: i32 },
     Fld { rd: FReg, rs1: Reg, offset: i32 },
     Flw { rd: FReg, rs1: Reg, offset: i32 },
+    Fcvtdlu { rd: Reg, rs1: FReg, rm: u8 },
+    Fcvtds { rd: Reg, rs1: FReg, rm: u8 },
+    Fled { rd: Reg, rs1: FReg, rs2: FReg },
+    Fdivd { rd: FReg, rs1: FReg, rs2: FReg },
 }
 
 impl Display for Inst {
@@ -174,6 +178,10 @@ impl Display for Inst {
             Inst::Fsw { rs1, rs2, offset } => write!(f, "fsw   {rs2}, {offset}({rs1})"),
             Inst::Fld { rs1, rd, offset } => write!(f, "fld   {rd}, {offset}({rs1})"),
             Inst::Flw { rs1, rd, offset } => write!(f, "flw   {rd}, {offset}({rs1})"),
+            Inst::Fcvtdlu { rs1, rd, rm } => write!(f, "fcvt.d.lu {rd}, {rs1} rm={rm:03b}"),
+            Inst::Fcvtds { rs1, rd, rm } => write!(f, "fcvt.d.s {rd}, {rs1} rm={rm:03b}"),
+            Inst::Fled { rd, rs1, rs2 } => write!(f, "fle.d  {rd}, {rs1} {rs2}"),
+            Inst::Fdivd { rd, rs1, rs2 } => write!(f, "fdiv.d {rd}, {rs1} {rs2}"),
         }
     }
 }
@@ -426,6 +434,28 @@ impl Inst {
                 _ => Inst::Error(inst),
             },
 
+            // floating point operations
+            0b1010011 => {
+                let rm = ((inst >> 12) & 0b11) as u8;
+                match (funct7, rs2.0, rm) {
+                    (0b001101, rs2, _rm) => Inst::Fdivd {
+                        rd: FReg(rd.0),
+                        rs1: FReg(rs1.0),
+                        rs2: FReg(rs2),
+                    },
+                    (0b1010001, rs2, 0b000) => Inst::Fled {
+                        rd,
+                        rs1: FReg(rs1.0),
+                        rs2: FReg(rs2),
+                    },
+                    (0b1101001, 0b00011, rm) => Inst::Fcvtdlu {
+                        rd,
+                        rs1: FReg(rs1.0),
+                        rm,
+                    },
+                    _ => Inst::Error(inst),
+                }
+            }
             // Branches
             0b1100011 => {
                 let offset = ((inst & 0b1111110000000000000000000000000) >> 20) as i32  // imm[10:5]

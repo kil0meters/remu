@@ -13,10 +13,13 @@ anyhow = "1.0.69"
 byteorder = "1.4.3"
 clap = { version = "4.1.4", features = ["derive"] }
 clap-verbosity-flag = "2.0.0"
+crossterm = "0.27.0"
 elf = "0.7.1"
 fnv = "1.0.7"
 log = "0.4.17"
 num-derive = "0.4.0"
 num-traits = "0.2.16"
+ratatui = "0.23.0"
 simplelog = "0.12.1"
 test-log = { version = "0.2.12", features = ["log"] }
+ratatui-textarea = "0.3"

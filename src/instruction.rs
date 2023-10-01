@@ -1,6 +1,6 @@
 use std::fmt::Display;
 
-use crate::emulator::{FReg, Reg, RA, SP};
+use crate::register::{FReg, Reg, RA, SP};
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub enum Inst {
@@ -99,94 +99,104 @@ pub enum Inst {
     Fdivd { rd: FReg, rs1: FReg, rs2: FReg },
 }
 
-impl Display for Inst {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl Inst {
+    pub fn fmt(&self, pc: u64) -> String {
         match *self {
-            Inst::Fence => write!(f, "fence"),
-            Inst::Ecall => write!(f, "ecall"),
-            Inst::Ebreak => write!(f, "break"),
-            Inst::Error(ref e) => write!(f, "error: {e:08x}"),
-            Inst::Lui { rd, imm } => write!(f, "lui   {}, {:x}", rd, imm >> 12),
-            Inst::Ld { rd, rs1, offset } => write!(f, "ld    {}, {}({})", rd, offset, rs1),
-            Inst::Lw { rd, rs1, offset } => write!(f, "lw    {}, {}({})", rd, offset, rs1),
-            Inst::Lwu { rd, rs1, offset } => write!(f, "lwu    {}, {}({})", rd, offset, rs1),
-            Inst::Lhu { rd, rs1, offset } => write!(f, "lhu   {}, {}({})", rd, offset, rs1),
-            Inst::Lb { rd, rs1, offset } => write!(f, "lbu   {}, {}({})", rd, offset, rs1),
-            Inst::Lbu { rd, rs1, offset } => write!(f, "lbu   {}, {}({})", rd, offset, rs1),
-            Inst::Sd { rs1, rs2, offset } => write!(f, "sd    {}, {}({})", rs2, offset, rs1),
-            Inst::Sw { rs1, rs2, offset } => write!(f, "sw    {}, {}({})", rs2, offset, rs1),
-            Inst::Sh { rs1, rs2, offset } => write!(f, "sh    {}, {}({})", rs2, offset, rs1),
-            Inst::Sb { rs1, rs2, offset } => write!(f, "sb    {}, {}({})", rs2, offset, rs1),
-            Inst::Add { rd, rs1, rs2 } => write!(f, "add   {rd}, {rs1}, {rs2}"),
-            Inst::Addw { rd, rs1, rs2 } => write!(f, "addw  {rd}, {rs1}, {rs2}"),
-            Inst::Addi { rd, rs1, imm } => write!(f, "addi  {rd}, {rs1}, {}", imm as i64),
-            Inst::Addiw { rd, rs1, imm } => write!(f, "addiw {rd}, {rs1}, {}", imm as i32),
-            Inst::And { rd, rs1, rs2 } => write!(f, "and   {rd}, {rs1}, {rs2}"),
-            Inst::Andi { rd, rs1, imm } => write!(f, "andi  {rd}, {rs1}, {}", imm as i64),
-            Inst::Sub { rd, rs1, rs2 } => write!(f, "sub   {rd}, {rs1}, {rs2}"),
-            Inst::Subw { rd, rs1, rs2 } => write!(f, "subw  {rd}, {rs1}, {rs2}"),
-            Inst::Sll { rd, rs1, rs2 } => write!(f, "sll  {rd}, {rs1}, {rs2}"),
-            Inst::Sllw { rd, rs1, rs2 } => write!(f, "sllw  {rd}, {rs1}, {rs2}"),
-            Inst::Slli { rd, rs1, shamt } => write!(f, "slli  {rd}, {rs1}, {shamt}"),
-            Inst::Slliw { rd, rs1, shamt } => write!(f, "slliw {rd}, {rs1}, {shamt}"),
-            Inst::Srl { rd, rs1, rs2 } => write!(f, "srl  {rd}, {rs1}, {rs2}"),
-            Inst::Srlw { rd, rs1, rs2 } => write!(f, "srl  {rd}, {rs1}, {rs2}"),
-            Inst::Srli { rd, rs1, shamt } => write!(f, "srli  {rd}, {rs1}, {shamt}"),
-            Inst::Srliw { rd, rs1, shamt } => write!(f, "srliw {rd}, {rs1}, {shamt}"),
-            Inst::Sra { rd, rs1, rs2 } => write!(f, "sra  {rd}, {rs1}, {rs2}"),
-            Inst::Sraw { rd, rs1, rs2 } => write!(f, "sraw {rd}, {rs1}, {rs2}"),
-            Inst::Srai { rd, rs1, shamt } => write!(f, "srai  {rd}, {rs1}, {shamt}"),
-            Inst::Sraiw { rd, rs1, shamt } => write!(f, "sraiw {rd}, {rs1}, {shamt}"),
-            Inst::Or { rd, rs1, rs2 } => write!(f, "or    {rd}, {rs1}, {rs2}"),
-            Inst::Ori { rd, rs1, imm } => write!(f, "ori   {rd}, {rs1}, {imm}"),
-            Inst::Xor { rd, rs1, rs2 } => write!(f, "xor   {rd}, {rs1}, {rs2}"),
-            Inst::Xori { rd, rs1, imm } => write!(f, "xori  {rd}, {rs1}, {imm}"),
-            Inst::Auipc { rd, imm } => write!(f, "auipc {rd}, 0x{:x}", imm as u64 >> 12),
-            Inst::Jal { rd, offset } => write!(f, "jal   {rd}, {offset:x}"),
-            Inst::Jalr { rd, rs1, offset } => write!(f, "jalr  {rd}, {offset}({rs1})"),
-            Inst::Beq { rs1, rs2, offset } => write!(f, "beq   {rs1}, {rs2}, {}", offset),
-            Inst::Bne { rs1, rs2, offset } => write!(f, "bne   {rs1}, {rs2}, {}", offset),
-            Inst::Blt { rs1, rs2, offset } => write!(f, "blt   {rs1}, {rs2}, {}", offset),
-            Inst::Bltu { rs1, rs2, offset } => write!(f, "bltu  {rs1}, {rs2}, {}", offset),
-            Inst::Bge { rs1, rs2, offset } => write!(f, "bge   {rs1}, {rs2}, {}", offset),
-            Inst::Bgeu { rs1, rs2, offset } => write!(f, "bgeu  {rs1}, {rs2}, {}", offset),
-            Inst::Div { rd, rs1, rs2 } => write!(f, "div   {rd}, {rs1}, {rs2}"),
-            Inst::Divw { rd, rs1, rs2 } => write!(f, "divw  {rd}, {rs1}, {rs2}"),
-            Inst::Divu { rd, rs1, rs2 } => write!(f, "divu  {rd}, {rs1}, {rs2}"),
-            Inst::Divuw { rd, rs1, rs2 } => write!(f, "divuw {rd}, {rs1}, {rs2}"),
-            Inst::Mul { rd, rs1, rs2 } => write!(f, "mul   {rd}, {rs1}, {rs2}"),
-            Inst::Mulhu { rd, rs1, rs2 } => write!(f, "mul   {rd}, {rs1}, {rs2}"),
-            Inst::Remw { rd, rs1, rs2 } => write!(f, "remw  {rd}, {rs1}, {rs2}"),
-            Inst::Remu { rd, rs1, rs2 } => write!(f, "remu  {rd}, {rs1}, {rs2}"),
-            Inst::Remuw { rd, rs1, rs2 } => write!(f, "remuw  {rd}, {rs1}, {rs2}"),
-            Inst::Amoswapw { rd, rs1, rs2 } => write!(f, "amoswap.w {rd}, {rs1}, {rs2}"),
-            Inst::Amoswapd { rd, rs1, rs2 } => write!(f, "amoswap.d {rd}, {rs1}, {rs2}"),
-            Inst::Amoaddw { rd, rs1, rs2 } => write!(f, "amoadd.w {rd}, {rs1}, {rs2}"),
-            Inst::Amoaddd { rd, rs1, rs2 } => write!(f, "amoadd.d {rd}, {rs1}, {rs2}"),
-            Inst::Amoorw { rd, rs1, rs2 } => write!(f, "amoor.w {rd}, {rs1}, {rs2}"),
-            Inst::Amomaxuw { rd, rs1, rs2 } => write!(f, "amomaxu.w {rd}, {rs1}, {rs2}"),
-            Inst::Amomaxud { rd, rs1, rs2 } => write!(f, "amomaxu.d {rd}, {rs1}, {rs2}"),
-            Inst::Slt { rd, rs1, rs2 } => write!(f, "slt   {rd}, {rs1}, {rs2}"),
-            Inst::Sltu { rd, rs1, rs2 } => write!(f, "sltu  {rd}, {rs1}, {rs2}"),
-            Inst::Slti { rd, rs1, imm } => write!(f, "slti  {rd}, {rs1}, {imm}"),
-            Inst::Sltiu { rd, rs1, imm } => write!(f, "sltiu {rd}, {rs1}, {imm}"),
-            Inst::Lrw { rd, rs1 } => write!(f, "lr.w  {rd}, ({rs1})"),
-            Inst::Lrd { rd, rs1 } => write!(f, "lr.d  {rd}, ({rs1})"),
-            Inst::Scw { rd, rs1, rs2 } => write!(f, "sc.w  {rd}, {rs2},({rs1})"),
-            Inst::Scd { rd, rs1, rs2 } => write!(f, "sc.d  {rd}, {rs2},({rs1})"),
-            Inst::Fsd { rs1, rs2, offset } => write!(f, "fsd   {rs2}, {offset}({rs1})"),
-            Inst::Fsw { rs1, rs2, offset } => write!(f, "fsw   {rs2}, {offset}({rs1})"),
-            Inst::Fld { rs1, rd, offset } => write!(f, "fld   {rd}, {offset}({rs1})"),
-            Inst::Flw { rs1, rd, offset } => write!(f, "flw   {rd}, {offset}({rs1})"),
-            Inst::Fcvtdlu { rs1, rd, rm } => write!(f, "fcvt.d.lu {rd}, {rs1} rm={rm:03b}"),
-            Inst::Fcvtds { rs1, rd, rm } => write!(f, "fcvt.d.s {rd}, {rs1} rm={rm:03b}"),
-            Inst::Fled { rd, rs1, rs2 } => write!(f, "fle.d  {rd}, {rs1} {rs2}"),
-            Inst::Fdivd { rd, rs1, rs2 } => write!(f, "fdiv.d {rd}, {rs1} {rs2}"),
+            Inst::Fence => format!("fence"),
+            Inst::Ecall => format!("ecall"),
+            Inst::Ebreak => format!("break"),
+            Inst::Error(ref e) => format!("error: {e:08x}"),
+            Inst::Lui { rd, imm } => format!("lui   {}, {:x}", rd, imm >> 12),
+            Inst::Ld { rd, rs1, offset } => format!("ld    {}, {}({})", rd, offset, rs1),
+            Inst::Lw { rd, rs1, offset } => format!("lw    {}, {}({})", rd, offset, rs1),
+            Inst::Lwu { rd, rs1, offset } => format!("lwu    {}, {}({})", rd, offset, rs1),
+            Inst::Lhu { rd, rs1, offset } => format!("lhu   {}, {}({})", rd, offset, rs1),
+            Inst::Lb { rd, rs1, offset } => format!("lbu   {}, {}({})", rd, offset, rs1),
+            Inst::Lbu { rd, rs1, offset } => format!("lbu   {}, {}({})", rd, offset, rs1),
+            Inst::Sd { rs1, rs2, offset } => format!("sd    {}, {}({})", rs2, offset, rs1),
+            Inst::Sw { rs1, rs2, offset } => format!("sw    {}, {}({})", rs2, offset, rs1),
+            Inst::Sh { rs1, rs2, offset } => format!("sh    {}, {}({})", rs2, offset, rs1),
+            Inst::Sb { rs1, rs2, offset } => format!("sb    {}, {}({})", rs2, offset, rs1),
+            Inst::Add { rd, rs1, rs2 } => format!("add   {rd}, {rs1}, {rs2}"),
+            Inst::Addw { rd, rs1, rs2 } => format!("addw  {rd}, {rs1}, {rs2}"),
+            Inst::Addi { rd, rs1, imm } => format!("addi  {rd}, {rs1}, {}", imm as i64),
+            Inst::Addiw { rd, rs1, imm } => format!("addiw {rd}, {rs1}, {}", imm as i32),
+            Inst::And { rd, rs1, rs2 } => format!("and   {rd}, {rs1}, {rs2}"),
+            Inst::Andi { rd, rs1, imm } => format!("andi  {rd}, {rs1}, {}", imm as i64),
+            Inst::Sub { rd, rs1, rs2 } => format!("sub   {rd}, {rs1}, {rs2}"),
+            Inst::Subw { rd, rs1, rs2 } => format!("subw  {rd}, {rs1}, {rs2}"),
+            Inst::Sll { rd, rs1, rs2 } => format!("sll  {rd}, {rs1}, {rs2}"),
+            Inst::Sllw { rd, rs1, rs2 } => format!("sllw  {rd}, {rs1}, {rs2}"),
+            Inst::Slli { rd, rs1, shamt } => format!("slli  {rd}, {rs1}, {shamt}"),
+            Inst::Slliw { rd, rs1, shamt } => format!("slliw {rd}, {rs1}, {shamt}"),
+            Inst::Srl { rd, rs1, rs2 } => format!("srl  {rd}, {rs1}, {rs2}"),
+            Inst::Srlw { rd, rs1, rs2 } => format!("srl  {rd}, {rs1}, {rs2}"),
+            Inst::Srli { rd, rs1, shamt } => format!("srli  {rd}, {rs1}, {shamt}"),
+            Inst::Srliw { rd, rs1, shamt } => format!("srliw {rd}, {rs1}, {shamt}"),
+            Inst::Sra { rd, rs1, rs2 } => format!("sra  {rd}, {rs1}, {rs2}"),
+            Inst::Sraw { rd, rs1, rs2 } => format!("sraw {rd}, {rs1}, {rs2}"),
+            Inst::Srai { rd, rs1, shamt } => format!("srai  {rd}, {rs1}, {shamt}"),
+            Inst::Sraiw { rd, rs1, shamt } => format!("sraiw {rd}, {rs1}, {shamt}"),
+            Inst::Or { rd, rs1, rs2 } => format!("or    {rd}, {rs1}, {rs2}"),
+            Inst::Ori { rd, rs1, imm } => format!("ori   {rd}, {rs1}, {imm}"),
+            Inst::Xor { rd, rs1, rs2 } => format!("xor   {rd}, {rs1}, {rs2}"),
+            Inst::Xori { rd, rs1, imm } => format!("xori  {rd}, {rs1}, {imm}"),
+            Inst::Auipc { rd, imm } => format!("auipc {rd}, 0x{:x}", imm as u64 >> 12),
+            Inst::Jal { rd, offset } => format!("jal   {rd}, {:x}", pc.wrapping_add(offset as u64)),
+            Inst::Jalr { rd, rs1, offset } => format!("jalr  {rd}, {offset}({rs1})"),
+            Inst::Beq { rs1, rs2, offset } => {
+                format!("beq   {rs1}, {rs2}, {:x}", pc.wrapping_add(offset as u64))
+            }
+            Inst::Bne { rs1, rs2, offset } => {
+                format!("bne   {rs1}, {rs2}, {:x}", pc.wrapping_add(offset as u64))
+            }
+            Inst::Blt { rs1, rs2, offset } => {
+                format!("blt   {rs1}, {rs2}, {:x}", pc.wrapping_add(offset as u64))
+            }
+            Inst::Bltu { rs1, rs2, offset } => {
+                format!("bltu  {rs1}, {rs2}, {:x}", pc.wrapping_add(offset as u64))
+            }
+            Inst::Bge { rs1, rs2, offset } => {
+                format!("bge   {rs1}, {rs2}, {:x}", pc.wrapping_add(offset as u64))
+            }
+            Inst::Bgeu { rs1, rs2, offset } => {
+                format!("bgeu  {rs1}, {rs2}, {:x}", pc.wrapping_add(offset as u64))
+            }
+            Inst::Div { rd, rs1, rs2 } => format!("div   {rd}, {rs1}, {rs2}"),
+            Inst::Divw { rd, rs1, rs2 } => format!("divw  {rd}, {rs1}, {rs2}"),
+            Inst::Divu { rd, rs1, rs2 } => format!("divu  {rd}, {rs1}, {rs2}"),
+            Inst::Divuw { rd, rs1, rs2 } => format!("divuw {rd}, {rs1}, {rs2}"),
+            Inst::Mul { rd, rs1, rs2 } => format!("mul   {rd}, {rs1}, {rs2}"),
+            Inst::Mulhu { rd, rs1, rs2 } => format!("mul   {rd}, {rs1}, {rs2}"),
+            Inst::Remw { rd, rs1, rs2 } => format!("remw  {rd}, {rs1}, {rs2}"),
+            Inst::Remu { rd, rs1, rs2 } => format!("remu  {rd}, {rs1}, {rs2}"),
+            Inst::Remuw { rd, rs1, rs2 } => format!("remuw  {rd}, {rs1}, {rs2}"),
+            Inst::Amoswapw { rd, rs1, rs2 } => format!("amoswap.w {rd}, {rs1}, {rs2}"),
+            Inst::Amoswapd { rd, rs1, rs2 } => format!("amoswap.d {rd}, {rs1}, {rs2}"),
+            Inst::Amoaddw { rd, rs1, rs2 } => format!("amoadd.w {rd}, {rs1}, {rs2}"),
+            Inst::Amoaddd { rd, rs1, rs2 } => format!("amoadd.d {rd}, {rs1}, {rs2}"),
+            Inst::Amoorw { rd, rs1, rs2 } => format!("amoor.w {rd}, {rs1}, {rs2}"),
+            Inst::Amomaxuw { rd, rs1, rs2 } => format!("amomaxu.w {rd}, {rs1}, {rs2}"),
+            Inst::Amomaxud { rd, rs1, rs2 } => format!("amomaxu.d {rd}, {rs1}, {rs2}"),
+            Inst::Slt { rd, rs1, rs2 } => format!("slt   {rd}, {rs1}, {rs2}"),
+            Inst::Sltu { rd, rs1, rs2 } => format!("sltu  {rd}, {rs1}, {rs2}"),
+            Inst::Slti { rd, rs1, imm } => format!("slti  {rd}, {rs1}, {imm}"),
+            Inst::Sltiu { rd, rs1, imm } => format!("sltiu {rd}, {rs1}, {imm}"),
+            Inst::Lrw { rd, rs1 } => format!("lr.w  {rd}, ({rs1})"),
+            Inst::Lrd { rd, rs1 } => format!("lr.d  {rd}, ({rs1})"),
+            Inst::Scw { rd, rs1, rs2 } => format!("sc.w  {rd}, {rs2},({rs1})"),
+            Inst::Scd { rd, rs1, rs2 } => format!("sc.d  {rd}, {rs2},({rs1})"),
+            Inst::Fsd { rs1, rs2, offset } => format!("fsd   {rs2}, {offset}({rs1})"),
+            Inst::Fsw { rs1, rs2, offset } => format!("fsw   {rs2}, {offset}({rs1})"),
+            Inst::Fld { rs1, rd, offset } => format!("fld   {rd}, {offset}({rs1})"),
+            Inst::Flw { rs1, rd, offset } => format!("flw   {rd}, {offset}({rs1})"),
+            Inst::Fcvtdlu { rs1, rd, rm } => format!("fcvt.d.lu {rd}, {rs1} rm={rm:03b}"),
+            Inst::Fcvtds { rs1, rd, rm } => format!("fcvt.d.s {rd}, {rs1} rm={rm:03b}"),
+            Inst::Fled { rd, rs1, rs2 } => format!("fle.d  {rd}, {rs1} {rs2}"),
+            Inst::Fdivd { rd, rs1, rs2 } => format!("fdiv.d {rd}, {rs1} {rs2}"),
         }
     }
-}
 
-impl Inst {
     // returns the instruction along with the number of bytes read
     pub fn decode(inst: u32) -> (Inst, u8) {
         match inst & 0b11 {
@@ -943,7 +953,7 @@ impl Inst {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::emulator::*;
+    use crate::register::*;
 
     #[test]
     fn cload_decoding() {

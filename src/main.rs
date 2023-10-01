@@ -3,16 +3,20 @@
 use anyhow::Result;
 use clap::Parser;
 use elf::{endian::AnyEndian, ElfBytes};
-use emulator::Emulator;
+use emulator::{Emulator, InstCache};
 use log::LevelFilter;
 use memory::Memory;
 use simplelog::{ConfigBuilder, SimpleLogger};
 
 mod auxvec;
+mod disassembler;
 mod emulator;
 mod instruction;
 mod memory;
+mod register;
 mod syscalls;
+mod time_travel;
+mod ui;
 
 #[derive(Parser)]
 struct Arguments {
@@ -20,6 +24,9 @@ struct Arguments {
 
     #[clap(short, long)]
     cache: bool,
+
+    #[clap(short, long)]
+    interactive: bool,
 
     #[clap(flatten)]
     verbose: clap_verbosity_flag::Verbosity,
@@ -50,20 +57,25 @@ fn main() -> Result<()> {
         }
     }
 
-    let memory = Memory::load_elf(file);
-    let mut emulator = Emulator::new(memory, args.cache);
+    let memory = Memory::load_elf(file, args.interactive);
+    let mut emulator = Emulator::new(memory);
 
-    loop {
-        if let Some(exit_code) = emulator.fetch_and_execute() {
-            println!("------------------------------");
-            println!("Program exited with code {exit_code}");
-            println!("Fuel consumed: {}", emulator.fuel_counter);
-            println!("Peak memory usage: {} bytes", emulator.max_memory);
-            break;
+    if args.interactive {
+        ui::main_loop(emulator)
+    } else {
+        let mut inst_cache = args.cache.then(InstCache::default);
+
+        loop {
+            if let Some(exit_code) = emulator.fetch_and_execute(inst_cache.as_mut()) {
+                print!("{}", emulator.stdout);
+                println!("------------------------------");
+                println!("Program exited with code {exit_code}");
+                println!("Fuel consumed: {}", emulator.inst_counter);
+                println!("Peak memory usage: {} bytes", emulator.max_memory);
+                break;
+            }
         }
+
+        Ok(())
     }
-
-    // emulator.print_registers();
-
-    Ok(())
 }

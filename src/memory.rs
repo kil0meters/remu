@@ -13,7 +13,10 @@ use log::{debug, warn};
 // fxhash        => 7.75s 7.88s 7.83s
 pub type MemMap<K, V> = fnv::FnvHashMap<K, V>;
 
-use crate::emulator::{FileDescriptor, STACK_START};
+use crate::{
+    disassembler::Disassembler,
+    emulator::{FileDescriptor, STACK_START},
+};
 
 // only this constant should be changed.
 // but it actually can't be changed since the linker complains :)
@@ -35,7 +38,7 @@ pub const LIBCPP_FILE_DESCRIPTOR: i64 = 11;
 pub const LIBM_FILE_DESCRIPTOR: i64 = 12;
 pub const LIBGCCS_FILE_DESCRIPTOR: i64 = 13;
 
-#[derive(Default)]
+#[derive(Default, Clone)]
 pub struct ProgramHeaderInfo {
     pub entry: u64,
     pub address: u64,
@@ -43,6 +46,7 @@ pub struct ProgramHeaderInfo {
     pub number: u64,
 }
 
+#[derive(Clone)]
 pub struct Memory {
     // No fancy hashing algorithm here as we're not concerned about mittigating denial of service
     // attacks, and we want our program to be deterministic.
@@ -58,17 +62,24 @@ pub struct Memory {
     pub entry: u64,
 
     pub program_header: ProgramHeaderInfo,
+
+    pub disassembler: Option<Disassembler>,
 }
 
 impl Memory {
-    pub fn load_elf<T: EndianParse>(elf: ElfBytes<T>) -> Self {
+    pub fn load_elf<T: EndianParse>(elf: ElfBytes<T>, disassemble: bool) -> Self {
         let mut memory = Memory {
             entry: 0,
             program_header: ProgramHeaderInfo::default(),
             heap_pointer: 0,
             stack_pointer: STACK_START + 1,
             pages: MemMap::default(),
+            disassembler: disassemble.then(Disassembler::new),
         };
+
+        if let Some(dias) = memory.disassembler.as_mut() {
+            dias.add_elf(&elf, 0);
+        }
 
         // load dynamic libraries, if they exist
         // https://blog.k3170makan.com/2018/11/introduction-to-elf-format-part-vii.html
@@ -89,6 +100,10 @@ impl Memory {
 
                 memory.map_segments(ld_offset, &ld_elf);
                 memory.map_segments(0x0, &elf);
+
+                if let Some(dias) = memory.disassembler.as_mut() {
+                    dias.add_elf(&ld_elf, ld_offset);
+                }
 
                 memory.entry = ld_offset + ld_elf.ehdr.e_entry;
             }
@@ -436,6 +451,16 @@ impl Memory {
 
         let s = String::from_utf8_lossy(&data);
         s.into()
+    }
+
+    // find offset, equal to the start of the memory mapped region
+    pub fn disassemble_elf(&mut self, data: &[u8], offset: u64) {
+        if let Some(disassembler) = self.disassembler.as_mut() {
+            eprintln!("Reading ELF");
+
+            let elf = ElfBytes::<AnyEndian>::minimal_parse(data).unwrap();
+            disassembler.add_elf(&elf, offset);
+        }
     }
 
     pub fn read_file(&mut self, file_descriptor: &mut FileDescriptor, buf: u64, count: u64) -> i64 {

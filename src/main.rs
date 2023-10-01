@@ -2,6 +2,7 @@
 
 use anyhow::Result;
 use clap::Parser;
+use disassembler::Disassembler;
 use elf::{endian::AnyEndian, ElfBytes};
 use emulator::{Emulator, InstCache};
 use log::LevelFilter;
@@ -22,9 +23,15 @@ mod ui;
 struct Arguments {
     file: String,
 
+    /// Enables an instruction cache which improves performance
     #[clap(short, long)]
     cache: bool,
 
+    /// Output the disassembly of the executable, then exit
+    #[clap(short, long)]
+    disassemble: bool,
+
+    /// Enables an interactive reverse debugger
     #[clap(short, long)]
     interactive: bool,
 
@@ -55,6 +62,11 @@ fn main() -> Result<()> {
             );
             return Ok(());
         }
+    }
+
+    if args.disassemble {
+        println!("{}", Disassembler::disassemble_elf(&file));
+        return Ok(());
     }
 
     let memory = Memory::load_elf(file, args.interactive);

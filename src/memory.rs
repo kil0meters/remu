@@ -1,3 +1,5 @@
+use std::ptr;
+
 use elf::{
     abi::{DT_NEEDED, PT_DYNAMIC, PT_INTERP, PT_LOAD, PT_PHDR},
     endian::{AnyEndian, EndianParse},
@@ -78,7 +80,7 @@ impl Memory {
         };
 
         if let Some(dias) = memory.disassembler.as_mut() {
-            dias.add_elf(&elf, 0);
+            dias.add_elf_symbols(&elf, 0);
         }
 
         // load dynamic libraries, if they exist
@@ -102,7 +104,7 @@ impl Memory {
                 memory.map_segments(0x0, &elf);
 
                 if let Some(dias) = memory.disassembler.as_mut() {
-                    dias.add_elf(&ld_elf, ld_offset);
+                    dias.add_elf_symbols(&ld_elf, ld_offset);
                 }
 
                 memory.entry = ld_offset + ld_elf.ehdr.e_entry;
@@ -284,12 +286,12 @@ impl Memory {
     //     }
     // }
 
-    pub fn load_u64(&mut self, addr: u64) -> u64 {
+    pub fn load_u64(&self, addr: u64) -> u64 {
         let virt_addr = addr & PAGE_MASK;
         if virt_addr < PAGE_MASK - 8 {
             // fast path
             // SAFETY: guaranteed to not cross page boundary
-            unsafe { self.data_ptr(addr).cast::<u64>().read_unaligned() }
+            unsafe { self.data_ptr_const(addr).cast::<u64>().read_unaligned() }
         } else {
             // slow path
             return (self.load_u8(addr) as u64)
@@ -303,12 +305,12 @@ impl Memory {
         }
     }
 
-    pub fn load_u32(&mut self, addr: u64) -> u32 {
+    pub fn load_u32(&self, addr: u64) -> u32 {
         let virt_addr = addr & PAGE_MASK;
         if virt_addr < PAGE_MASK - 4 {
             // fast path
             // SAFETY: guaranteed to not cross page boundary
-            unsafe { self.data_ptr(addr).cast::<u32>().read_unaligned() }
+            unsafe { self.data_ptr_const(addr).cast::<u32>().read_unaligned() }
         } else {
             // slow path
             return (self.load_u8(addr) as u32)
@@ -318,12 +320,12 @@ impl Memory {
         }
     }
 
-    pub fn load_u16(&mut self, addr: u64) -> u16 {
+    pub fn load_u16(&self, addr: u64) -> u16 {
         let virt_addr = addr & PAGE_MASK;
         if virt_addr < PAGE_MASK - 2 {
             // fast path
             // SAFETY: guaranteed to not cross page boundary
-            unsafe { self.data_ptr(addr).cast::<u16>().read_unaligned() }
+            unsafe { self.data_ptr_const(addr).cast::<u16>().read_unaligned() }
         } else {
             // slow path
             return (self.load_u8(addr) as u16) //.
@@ -331,12 +333,12 @@ impl Memory {
         }
     }
 
-    pub fn load_u8(&mut self, index: u64) -> u8 {
+    pub fn load_u8(&self, index: u64) -> u8 {
         // SAFETY: it's impossible for loading a byte to cross a page boundry.
-        unsafe { *self.data_ptr(index) }
+        unsafe { *self.data_ptr_const(index) }
     }
 
-    fn data_ptr(&mut self, addr: u64) -> *mut u8 {
+    fn data_ptr_mut(&mut self, addr: u64) -> *mut u8 {
         // try loading from an page
         let phys_addr = addr & !PAGE_MASK;
         let virt_addr = addr & PAGE_MASK;
@@ -373,12 +375,29 @@ impl Memory {
         }
     }
 
+    fn data_ptr_const(&self, addr: u64) -> *const u8 {
+        // try loading from an page
+        let phys_addr = addr & !PAGE_MASK;
+        let virt_addr = addr & PAGE_MASK;
+
+        debug_assert!(virt_addr < PAGE_SIZE);
+
+        if let Some(page) = self.pages.get(&phys_addr) {
+            unsafe {
+                // SAFETY: virt_addr < PAGE_SIZE
+                return page.as_ptr().add(virt_addr as usize);
+            }
+        } else {
+            panic!("Address not in memory");
+        }
+    }
+
     pub fn store_u64(&mut self, addr: u64, data: u64) {
         let virt_addr = addr & PAGE_MASK;
         if virt_addr < PAGE_MASK - 8 {
             // fast path
             // SAFETY: guaranteed to not cross page boundary
-            unsafe { self.data_ptr(addr).cast::<u64>().write_unaligned(data) }
+            unsafe { self.data_ptr_mut(addr).cast::<u64>().write_unaligned(data) }
         } else {
             // slow path
             self.store_u8(addr + 7, (data >> 56) as u8);
@@ -397,7 +416,7 @@ impl Memory {
         if virt_addr < PAGE_MASK - 4 {
             // fast path
             // SAFETY: guaranteed to not cross page boundary
-            unsafe { self.data_ptr(addr).cast::<u32>().write_unaligned(data) }
+            unsafe { self.data_ptr_mut(addr).cast::<u32>().write_unaligned(data) }
         } else {
             // slow path
             self.store_u8(addr + 3, (data >> 24) as u8);
@@ -412,7 +431,7 @@ impl Memory {
         if virt_addr < PAGE_MASK - 2 {
             // fast path
             // SAFETY: guaranteed to not cross page boundary
-            unsafe { self.data_ptr(addr).cast::<u16>().write_unaligned(data) }
+            unsafe { self.data_ptr_mut(addr).cast::<u16>().write_unaligned(data) }
         } else {
             // slow path
             self.store_u8(addr + 1, (data >> 8) as u8);
@@ -422,7 +441,7 @@ impl Memory {
 
     pub fn store_u8(&mut self, idx: u64, data: u8) {
         // SAFETY: guaranteed to not cross page boundary
-        unsafe { self.data_ptr(idx).write_unaligned(data) }
+        unsafe { self.data_ptr_mut(idx).write_unaligned(data) }
     }
 
     pub fn write_n(&mut self, s: &[u8], addr: u64, len: u64) {
@@ -451,16 +470,6 @@ impl Memory {
 
         let s = String::from_utf8_lossy(&data);
         s.into()
-    }
-
-    // find offset, equal to the start of the memory mapped region
-    pub fn disassemble_elf(&mut self, data: &[u8], offset: u64) {
-        if let Some(disassembler) = self.disassembler.as_mut() {
-            eprintln!("Reading ELF");
-
-            let elf = ElfBytes::<AnyEndian>::minimal_parse(data).unwrap();
-            disassembler.add_elf(&elf, offset);
-        }
     }
 
     pub fn read_file(&mut self, file_descriptor: &mut FileDescriptor, buf: u64, count: u64) -> i64 {

@@ -377,7 +377,6 @@ impl Emulator {
                         self.x[A0] = self.memory.mmap(0, len) as u64;
                     }
                 } else if let Some(descriptor) = self.file_descriptors.get_mut(&fd) {
-                    self.memory.disassemble_elf(LIBC_DATA, addr);
                     self.x[A0] = self.memory.mmap_file(descriptor, addr, offset, len) as u64;
                 } else {
                     self.x[A0] = -1i64 as u64;
@@ -424,7 +423,7 @@ impl Emulator {
         }
     }
 
-    fn fetch(&mut self, inst_cache: Option<&mut InstCache>) -> (Inst, u8) {
+    fn fetch(&self, inst_cache: Option<&mut InstCache>) -> (Inst, u8) {
         let inst = if let Some(inst_cache) = inst_cache {
             if let Some(inst) = inst_cache.get(&self.pc) {
                 *inst

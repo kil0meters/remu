@@ -5,8 +5,8 @@ use crate::{
 };
 
 // number of instructions
-const B_STATE_INTERVAL: u64 = 1000;
-const B_STATE_LIMIT: usize = 50;
+const B_STATE_INTERVAL: u64 = 10000;
+const B_STATE_LIMIT: usize = 250;
 
 pub struct TimeTravel {
     pub current: Emulator,

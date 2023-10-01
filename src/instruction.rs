@@ -808,12 +808,14 @@ impl Inst {
                         let shamt = (inst & 0b1000000000000) >> 7 // imm[5]
                                   | (inst & 0b1111100) >> 2; // imm[4:0]
 
-                        assert_ne!(shamt, 0);
-
-                        Inst::Slli {
-                            rd,
-                            rs1: rd,
-                            shamt: shamt as u32,
+                        if shamt != 0 {
+                            Inst::Slli {
+                                rd,
+                                rs1: rd,
+                                shamt: shamt as u32,
+                            }
+                        } else {
+                            Inst::Error(inst as u32)
                         }
                     }
                     0b001 => {

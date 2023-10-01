@@ -38,20 +38,29 @@ pub fn main_loop(emulator: Emulator) -> Result<()> {
                     .constraints([Constraint::Percentage(70), Constraint::Percentage(30)])
                     .split(chunks[0]);
 
-                let disassembler = time_travel.current.memory.disassembler.as_mut().unwrap();
+                let disassembler = time_travel.current.memory.disassembler.as_ref().unwrap();
+                let disassembly = disassembler.disassemble_pc_relative(
+                    &time_travel.current.memory,
+                    time_travel.current.pc,
+                    20,
+                );
 
-                let dias_string = disassembler.disassemble();
-                let hl_line = disassembler.get_inst_line(time_travel.current.pc);
+                let pc_start = format!("{:16x}", time_travel.current.pc);
+
+                let hl_line = disassembly
+                    .lines()
+                    .position(|line| line.starts_with(&pc_start))
+                    .unwrap();
 
                 let skip_amount = (hl_line as i32 - 8).max(0) as usize;
-                let items: Vec<ListItem> = dias_string
-                    .iter()
-                    .skip(skip_amount)
+                let items: Vec<ListItem> = disassembly
+                    .lines()
                     .enumerate()
+                    .skip(skip_amount)
                     .take(vertical_split[0].height as usize)
                     .map(|(i, line)| {
                         let list_item = ListItem::new(Line::from(Span::raw(line.to_string())));
-                        if (i + skip_amount) as u64 == hl_line {
+                        if i == hl_line {
                             list_item.style(
                                 Style::default()
                                     .add_modifier(Modifier::REVERSED)

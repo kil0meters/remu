@@ -72,6 +72,11 @@ pub fn main_loop(emulator: Emulator) -> Result<()> {
                     })
                     .collect();
 
+                let disassmebly_memory_split = Layout::default()
+                    .direction(Direction::Horizontal)
+                    .constraints([Constraint::Min(30), Constraint::Length(32)])
+                    .split(vertical_split[0]);
+
                 f.render_widget(
                     List::new(items).block(
                         Block::default()
@@ -79,7 +84,23 @@ pub fn main_loop(emulator: Emulator) -> Result<()> {
                             .borders(Borders::ALL)
                             .border_style(Style::default()),
                     ),
-                    vertical_split[0],
+                    disassmebly_memory_split[0],
+                );
+
+                // create hexdump
+                let dump = time_travel
+                    .current
+                    .memory
+                    .hexdump(time_travel.current.last_mem_access, 30);
+
+                f.render_widget(
+                    Paragraph::new(dump).block(
+                        Block::default()
+                            .title("Memory")
+                            .borders(Borders::ALL)
+                            .border_style(Style::default()),
+                    ),
+                    disassmebly_memory_split[1],
                 );
 
                 let output_split = Layout::default()

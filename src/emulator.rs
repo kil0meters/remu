@@ -45,6 +45,9 @@ pub struct Emulator {
     pub inst_counter: u64,
     pub max_memory: u64,
 
+    // stores the address of the most recently accessed memory location
+    pub last_mem_access: u64,
+
     // Similar to fuel_counter, but also takes into account intruction level parallelism and cache misses.
     // performance_counter: u64,
     exit_code: Option<u64>,
@@ -65,6 +68,7 @@ impl Emulator {
             exit_code: None,
             inst_counter: 0,
             max_memory: 0,
+            last_mem_access: 0,
             // performance_counter: 0,
         };
 
@@ -143,7 +147,10 @@ impl Emulator {
     fn syscall(&mut self, id: u64) {
         let arg = self.x[A0];
 
-        let sc: Syscall = FromPrimitive::from_u64(id).expect(&format!("Unknown syscall: {id}"));
+        let sc: Syscall = FromPrimitive::from_u64(id).expect(&format!(
+            "{:16x} {} Unknown syscall: {id}",
+            self.pc, self.inst_counter
+        ));
 
         log::info!("{:x}: executing syscall {sc:?}", self.pc);
 
@@ -489,64 +496,72 @@ impl Emulator {
             }
             Inst::Ld { rd, rs1, offset } => {
                 let addr = self.x[rs1].wrapping_add(offset as u64);
-
+                self.last_mem_access = addr;
                 self.x[rd] = self.memory.load_u64(addr);
-
-                log::debug!("addr = {addr:x}, value = 0x{:x}", self.x[rd]);
             }
             Inst::Fld { rd, rs1, offset } => {
                 let addr = self.x[rs1].wrapping_add(offset as u64);
+                self.last_mem_access = addr;
                 self.f[rd] = f64::from_bits(self.memory.load_u64(addr));
             }
             Inst::Flw { rd, rs1, offset } => {
                 let addr = self.x[rs1].wrapping_add(offset as u64);
+                self.last_mem_access = addr;
                 self.f[rd] = f32::from_bits(self.memory.load_u32(addr)) as f64;
             }
             Inst::Lw { rd, rs1, offset } => {
                 let addr = self.x[rs1].wrapping_add(offset as u64);
+                self.last_mem_access = addr;
                 self.x[rd] = self.memory.load_u32(addr) as i32 as u64;
             }
             Inst::Lwu { rd, rs1, offset } => {
                 let addr = self.x[rs1].wrapping_add(offset as u64);
+                self.last_mem_access = addr;
                 self.x[rd] = self.memory.load_u32(addr) as u64;
             }
             Inst::Lhu { rd, rs1, offset } => {
                 let addr = self.x[rs1].wrapping_add(offset as u64);
+                self.last_mem_access = addr;
                 self.x[rd] = self.memory.load_u16(addr) as u64;
             }
             Inst::Lb { rd, rs1, offset } => {
                 let addr = self.x[rs1].wrapping_add(offset as u64);
+                self.last_mem_access = addr;
                 self.x[rd] = self.memory.load_u8(addr) as i8 as u64;
             }
             Inst::Lbu { rd, rs1, offset } => {
                 let addr = self.x[rs1].wrapping_add(offset as u64);
+                self.last_mem_access = addr;
                 self.x[rd] = self.memory.load_u8(addr) as u64;
-                log::debug!("addr = {addr:x}, value = {:x}", self.x[rd]);
             }
             Inst::Sd { rs1, rs2, offset } => {
                 let addr = self.x[rs1].wrapping_add(offset as u64);
-                log::debug!("addr = {addr:x}, value = 0x{:x}", self.x[rs2]);
-
+                self.last_mem_access = addr;
                 self.memory.store_u64(addr, self.x[rs2]);
             }
             Inst::Fsd { rs1, rs2, offset } => {
                 let addr = self.x[rs1].wrapping_add(offset as u64);
+                self.last_mem_access = addr;
                 self.memory.store_u64(addr, self.f[rs2].to_bits());
             }
             Inst::Fsw { rs1, rs2, offset } => {
                 let addr = self.x[rs1].wrapping_add(offset as u64);
+                self.last_mem_access = addr;
                 self.memory.store_u32(addr, (self.f[rs2] as f32).to_bits());
             }
             Inst::Sw { rs1, rs2, offset } => {
                 let addr = self.x[rs1].wrapping_add(offset as u64);
+                self.last_mem_access = addr;
                 self.memory.store_u32(addr, self.x[rs2] as u32);
             }
             Inst::Sh { rs1, rs2, offset } => {
                 let addr = self.x[rs1].wrapping_add(offset as u64);
+                self.last_mem_access = addr;
                 self.memory.store_u16(addr, self.x[rs2] as u16);
             }
             Inst::Sb { rs1, rs2, offset } => {
                 let addr = self.x[rs1].wrapping_add(offset as u64);
+                self.last_mem_access = addr;
                 self.memory.store_u8(addr, self.x[rs2] as u8);
             }
             Inst::Add { rd, rs1, rs2 } => self.x[rd] = self.x[rs1].wrapping_add(self.x[rs2]),

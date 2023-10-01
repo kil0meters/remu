@@ -388,7 +388,7 @@ impl Memory {
                 return page.as_ptr().add(virt_addr as usize);
             }
         } else {
-            panic!("Address not in memory");
+            return EMPTY_PAGE.as_ptr();
         }
     }
 
@@ -485,5 +485,31 @@ impl Memory {
         } else {
             data.len() as i64
         }
+    }
+
+    pub fn hexdump(&self, mut addr: u64, length: u64) -> String {
+        let mut writer = String::with_capacity(33 * length as usize);
+
+        addr = addr & !0b111111;
+
+        for _ in 0..length {
+            let mut line = String::with_capacity(33);
+            for _ in 0..32 {
+                let c = self.load_u8(addr);
+                line.push(if c.is_ascii_graphic() || c.is_ascii_alphabetic() {
+                    c
+                } else {
+                    b'.'
+                } as char);
+
+                addr += 1;
+            }
+
+            line.push('\n');
+
+            writer.push_str(&line);
+        }
+
+        writer
     }
 }

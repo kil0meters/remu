@@ -501,7 +501,11 @@ impl Inst {
                 Inst::Jal { rd, offset }
             }
 
-            0b1110011 => Inst::Ecall,
+            0b1110011 => match (funct7, rs2.0, rs1.0, funct3, rd.0) {
+                (0, 0, 0, 0, 0) => Inst::Ecall,
+                (1, 0, 0, 0, 0) => Inst::Ebreak,
+                _ => Inst::Error(inst),
+            },
 
             _ => Inst::Error(inst),
         }

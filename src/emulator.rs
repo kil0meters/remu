@@ -230,7 +230,10 @@ impl Emulator {
 
                 log::info!("Reading {count} bytes from file fd={fd} to addr={buf:x}");
 
-                if let Some(entry) = self.file_descriptors.get_mut(&fd) {
+                // special case input
+                if fd == 0 {
+                    self.x[A0] = -1i64 as u64;
+                } else if let Some(entry) = self.file_descriptors.get_mut(&fd) {
                     self.x[A0] = self.memory.read_file(entry, buf, count) as u64;
                 } else {
                     self.x[A0] = -1i64 as u64;

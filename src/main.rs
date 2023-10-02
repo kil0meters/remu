@@ -73,7 +73,8 @@ fn main() -> Result<()> {
     let mut emulator = Emulator::new(memory);
 
     if args.interactive {
-        ui::main_loop(emulator)
+        let mut app = ui::App::new(emulator);
+        app.main_loop()
     } else {
         let mut inst_cache = args.cache.then(InstCache::default);
 

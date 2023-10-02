@@ -14,14 +14,22 @@ use crate::{emulator::Emulator, time_travel::TimeTravel};
 
 pub struct App {
     time_travel: TimeTravel,
+    breakpoint: Breakpoint,
     enable_auto: bool,
     auto_delay: u64,
+}
+
+enum Breakpoint {
+    None,
+    Syscall,
+    Symbol(String),
 }
 
 impl App {
     pub fn new(emulator: Emulator) -> App {
         App {
             time_travel: TimeTravel::new(emulator),
+            breakpoint: Breakpoint::None,
             enable_auto: false,
             auto_delay: 16,
         }
@@ -93,7 +101,7 @@ impl App {
 
                     let disassmebly_memory_split = Layout::default()
                         .direction(Direction::Horizontal)
-                        .constraints([Constraint::Min(30), Constraint::Length(32)])
+                        .constraints([Constraint::Min(30), Constraint::Length(34)])
                         .split(vertical_split[0]);
 
                     f.render_widget(
@@ -247,21 +255,56 @@ impl App {
             .collect::<Vec<_>>();
 
         match tokens[0] {
-            "step" => {
-                if let Ok(step_amount) = tokens[1].parse() {
-                    self.time_travel.step(step_amount);
-                }
+            "s" | "step" => {
+                let step_amount = tokens.get(1).map(|s| s.parse().unwrap_or(1)).unwrap_or(1);
+                self.time_travel.step(step_amount);
             }
 
             "stopauto" => {
                 self.enable_auto = false;
             }
 
-            "auto" => {
+            "a" | "auto" => {
                 self.enable_auto = true;
                 let auto_delay = tokens.get(1).map(|s| s.parse().unwrap_or(16)).unwrap_or(16);
                 self.auto_delay = auto_delay;
             }
+
+            // advance to next breakpoint, or end of program
+            "n" | "next" => match self.breakpoint {
+                Breakpoint::None => while self.time_travel.step(1).is_none() {},
+                Breakpoint::Syscall => todo!(),
+                Breakpoint::Symbol(ref search_symbol) => {
+                    while self.time_travel.step(1).is_none() {
+                        if let Some(symbol_at_addr) = self
+                            .time_travel
+                            .current
+                            .memory
+                            .disassembler
+                            .as_ref()
+                            .unwrap()
+                            .get_symbol_at_addr(self.time_travel.current.pc)
+                        {
+                            if &symbol_at_addr == search_symbol {
+                                break;
+                            }
+                        }
+                    }
+                }
+            },
+
+            // set breakpoint
+            "bp" => match tokens.get(1) {
+                Some(&"syscall") => {
+                    self.breakpoint = Breakpoint::Syscall;
+                }
+                Some(&symbol_name) => {
+                    self.breakpoint = Breakpoint::Symbol(symbol_name.to_string());
+                }
+                None => {
+                    self.breakpoint = Breakpoint::None;
+                }
+            },
 
             _ => {}
         }

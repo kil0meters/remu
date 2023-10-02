@@ -74,6 +74,24 @@ impl Emulator {
 
         em.x[SP] = STACK_START;
 
+        em.file_descriptors.insert(
+            0,
+            FileDescriptor {
+                offset: 1,
+                data: b"5 5 3 3 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1
+2 2 1
+8 3 0
+1 1 0
+1 1 0
+1 1 0
+1 1 0
+1 1 0
+1 1 0
+1 1 0
+1 1 0",
+            },
+        );
+
         em.init_auxv_stack();
 
         em
@@ -231,9 +249,7 @@ impl Emulator {
                 log::info!("Reading {count} bytes from file fd={fd} to addr={buf:x}");
 
                 // special case input
-                if fd == 0 {
-                    self.x[A0] = -1i64 as u64;
-                } else if let Some(entry) = self.file_descriptors.get_mut(&fd) {
+                if let Some(entry) = self.file_descriptors.get_mut(&fd) {
                     self.x[A0] = self.memory.read_file(entry, buf, count) as u64;
                 } else {
                     self.x[A0] = -1i64 as u64;
@@ -722,13 +738,25 @@ impl Emulator {
                 self.x[rd] = ((self.x[rs1] as u128).wrapping_mul(self.x[rs2] as u128) >> 64) as u64;
             }
             Inst::Remw { rd, rs1, rs2 } => {
-                self.x[rd] = ((self.x[rs1] as i32) % (self.x[rs2] as i32)) as u64;
+                if self.x[rs2] == 0 {
+                    self.x[rd] = (self.x[rs1] as i32) as u64;
+                } else {
+                    self.x[rd] = ((self.x[rs1] as i32) % (self.x[rs2] as i32)) as u64;
+                }
             }
             Inst::Remu { rd, rs1, rs2 } => {
-                self.x[rd] = self.x[rs1] % self.x[rs2];
+                if self.x[rs2] == 0 {
+                    self.x[rd] = self.x[rs1];
+                } else {
+                    self.x[rd] = self.x[rs1] % self.x[rs2];
+                }
             }
             Inst::Remuw { rd, rs1, rs2 } => {
-                self.x[rd] = ((self.x[rs1] as u32) % (self.x[rs2] as u32)) as i32 as u64;
+                if self.x[rs2] == 0 {
+                    self.x[rd] = self.x[rs1] as u32 as u64;
+                } else {
+                    self.x[rd] = ((self.x[rs1] as u32) % (self.x[rs2] as u32)) as i32 as u64;
+                }
             }
             Inst::Amoswapw { rd, rs1, rs2 } => {
                 log::debug!("amoswapw: addr = {:x}", self.x[rs1]);

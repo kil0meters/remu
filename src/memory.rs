@@ -491,16 +491,19 @@ impl Memory {
         let mut writer = String::with_capacity(33 * length as usize);
 
         addr = addr & !0b111111;
+        addr -= 33 * 10;
 
         for _ in 0..length {
             let mut line = String::with_capacity(33);
             for _ in 0..32 {
                 let c = self.load_u8(addr);
-                line.push(if c.is_ascii_graphic() || c.is_ascii_alphabetic() {
-                    c
-                } else {
-                    b'.'
-                } as char);
+                line.push(
+                    if c.is_ascii_graphic() || c.is_ascii_alphabetic() || c == b' ' {
+                        c
+                    } else {
+                        b'.'
+                    } as char,
+                );
 
                 addr += 1;
             }

@@ -148,11 +148,18 @@ impl Disassembler {
         writer
     }
 
+    pub fn get_symbol_at_addr(&self, addr: u64) -> Option<String> {
+        self.symbols
+            .binary_search_by_key(&addr, |a| a.0)
+            .map(|idx| self.symbols[idx].1.clone())
+            .ok()
+    }
+
     fn disassemble_inst(&self, inst: Inst, pc: u64) -> String {
         let mut writer = String::new();
 
-        if let Ok(idx) = self.symbols.binary_search_by_key(&pc, |a| a.0) {
-            writer.push_str(&format!("\n{}:\n", self.symbols[idx].1));
+        if let Some(symbol) = self.get_symbol_at_addr(pc) {
+            writer.push_str(&format!("\n{symbol}:\n"));
         }
 
         writer.push_str(&format!("{pc:16x} {}", inst.fmt(pc)));
@@ -174,8 +181,8 @@ impl Disassembler {
         };
 
         if let Some(label_offset) = label_offset {
-            if let Ok(idx) = self.symbols.binary_search_by_key(&label_offset, |a| a.0) {
-                writer.push_str(&format!(" ; {}", self.symbols[idx].1));
+            if let Some(symbol) = self.get_symbol_at_addr(label_offset) {
+                writer.push_str(&format!(" ; {symbol}"));
             }
         }
 

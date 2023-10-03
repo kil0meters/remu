@@ -74,27 +74,14 @@ impl Emulator {
 
         em.x[SP] = STACK_START;
 
-        em.file_descriptors.insert(
-            0,
-            FileDescriptor {
-                offset: 1,
-                data: b"5 5 3 3 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1
-2 2 1
-8 3 0
-1 1 0
-1 1 0
-1 1 0
-1 1 0
-1 1 0
-1 1 0
-1 1 0
-1 1 0",
-            },
-        );
-
         em.init_auxv_stack();
 
         em
+    }
+
+    pub fn set_stdin(&mut self, data: &'static [u8]) {
+        self.file_descriptors
+            .insert(0, FileDescriptor { offset: 0, data });
     }
 
     // https://github.com/torvalds/linux/blob/master/fs/binfmt_elf.c#L175
@@ -238,6 +225,41 @@ impl Emulator {
                     self.x[A0] = 0;
                 } else {
                     self.x[A0] = -1i64 as u64;
+                }
+            }
+
+            Syscall::Lseek => {
+                let fd = self.x[A0] as i64;
+                let offset = self.x[A1];
+                let whence = self.x[A2];
+
+                match self.file_descriptors.get_mut(&fd) {
+                    Some(descriptor) => {
+                        match whence {
+                            // SEEK_SET
+                            0 => {
+                                descriptor.offset = offset;
+                            }
+
+                            // SEEK_CUR
+                            1 => {
+                                descriptor.offset = descriptor.offset.wrapping_add(offset);
+                            }
+
+                            // SEEK_END
+                            2 => {
+                                descriptor.offset =
+                                    (descriptor.data.len() as u64).wrapping_add(offset);
+                            }
+
+                            _ => {
+                                self.x[A0] = -1i64 as u64;
+                            }
+                        }
+                    }
+                    None => {
+                        self.x[A0] = -1i64 as u64;
+                    }
                 }
             }
 

@@ -450,7 +450,6 @@ impl Memory {
         }
         for i in s.len() as u64..len {
             self.store_u8(addr + i, 0);
-            // println!("SETTING ZERO: {:x}", addr + i);
         }
     }
 
@@ -478,13 +477,9 @@ impl Memory {
 
         let data = &file_descriptor.data[o..max];
 
-        self.write_n(data, buf, count);
+        self.write_n(data, buf, data.len() as u64);
 
-        if data.len() as u64 != count {
-            0
-        } else {
-            data.len() as i64
-        }
+        data.len() as i64
     }
 
     pub fn hexdump(&self, mut addr: u64, length: u64) -> String {

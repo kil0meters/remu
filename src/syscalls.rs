@@ -9,6 +9,7 @@ pub enum Syscall {
     Faccessat = 48,
     Openat = 56,
     Close = 57,
+    Lseek = 62,
     Read = 63,
     Write = 64,
     Writev = 66,

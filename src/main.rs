@@ -27,6 +27,10 @@ struct Arguments {
     #[clap(short, long)]
     cache: bool,
 
+    /// Path for a file to be treated as standard input
+    #[clap(long)]
+    stdin: Option<String>,
+
     /// Output the disassembly of the executable, then exit
     #[clap(short, long)]
     disassemble: bool,
@@ -72,6 +76,14 @@ fn main() -> Result<()> {
     let memory = Memory::load_elf(file, args.interactive);
     let mut emulator = Emulator::new(memory);
 
+    if let Some(stdin_file) = args.stdin {
+        let file_data = std::fs::read(stdin_file)
+            .expect("Could not read file.")
+            .leak();
+
+        emulator.set_stdin(file_data);
+    }
+
     if args.interactive {
         let mut app = ui::App::new(emulator);
         app.main_loop()
@@ -81,10 +93,10 @@ fn main() -> Result<()> {
         loop {
             if let Some(exit_code) = emulator.fetch_and_execute(inst_cache.as_mut()) {
                 print!("{}", emulator.stdout);
-                println!("------------------------------");
-                println!("Program exited with code {exit_code}");
-                println!("Fuel consumed: {}", emulator.inst_counter);
-                println!("Peak memory usage: {} bytes", emulator.max_memory);
+                eprintln!("------------------------------");
+                eprintln!("Program exited with code {exit_code}");
+                eprintln!("Fuel consumed: {}", emulator.inst_counter);
+                eprintln!("Peak memory usage: {} bytes", emulator.max_memory);
                 break;
             }
         }

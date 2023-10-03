@@ -23,6 +23,7 @@ enum Breakpoint {
     None,
     Syscall,
     Symbol(String),
+    Address(u64),
 }
 
 impl App {
@@ -260,7 +261,7 @@ impl App {
                 self.time_travel.step(step_amount);
             }
 
-            "stopauto" => {
+            "sa" | "stopauto" => {
                 self.enable_auto = false;
             }
 
@@ -291,6 +292,13 @@ impl App {
                         }
                     }
                 }
+                Breakpoint::Address(a) => {
+                    while self.time_travel.step(1).is_none() {
+                        if self.time_travel.current.pc == a {
+                            break;
+                        }
+                    }
+                }
             },
 
             // set breakpoint
@@ -298,9 +306,14 @@ impl App {
                 Some(&"syscall") => {
                     self.breakpoint = Breakpoint::Syscall;
                 }
-                Some(&symbol_name) => {
-                    self.breakpoint = Breakpoint::Symbol(symbol_name.to_string());
-                }
+                Some(&symbol_name) => match u64::from_str_radix(symbol_name, 16) {
+                    Ok(a) => {
+                        self.breakpoint = Breakpoint::Address(a);
+                    }
+                    Err(_) => {
+                        self.breakpoint = Breakpoint::Symbol(symbol_name.to_string());
+                    }
+                },
                 None => {
                     self.breakpoint = Breakpoint::None;
                 }

@@ -51,7 +51,7 @@ impl App {
             terminal.draw(|f| {
                 let chunks = Layout::default()
                     .direction(Direction::Horizontal)
-                    .constraints([Constraint::Min(10), Constraint::Length(26)])
+                    .constraints([Constraint::Min(10), Constraint::Length(28)])
                     .split(f.size());
 
                 {
@@ -70,7 +70,7 @@ impl App {
                     let disassembly = disassembler.disassemble_pc_relative(
                         &self.time_travel.current.memory,
                         self.time_travel.current.pc,
-                        20,
+                        30,
                     );
 
                     let pc_start = format!("{:16x}", self.time_travel.current.pc);

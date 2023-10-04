@@ -112,24 +112,8 @@ impl Disassembler {
     pub fn disassemble_pc_relative(&self, memory: &Memory, start_pc: u64, mut n: u64) -> String {
         let mut writer = String::new();
 
-        // find label that's before the pc to get aligned point for instruction to start.
-        // if that point is earlier than n instructions before pc, go to an earlier one.
-        let idx = self.symbols.binary_search_by(|(addr, _name)| {
-            if *addr < start_pc && start_pc - addr < 16 * n {
-                Ordering::Equal
-            } else {
-                addr.cmp(&start_pc)
-            }
-        });
+        let mut pc = start_pc - 4 * n;
 
-        // if we can't find one, we set
-        let mut pc = match idx {
-            Ok(idx) => self.symbols[idx].0,
-            Err(_) => {
-                n *= 2;
-                start_pc
-            }
-        };
         let mut count_after = 0;
 
         while count_after < n {

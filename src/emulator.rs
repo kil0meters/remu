@@ -509,8 +509,8 @@ impl Emulator {
     pub fn print_registers(&self) -> String {
         let mut output = String::new();
 
-        output.push_str(&format!("pc: {:20x}\n", self.pc));
-        output.push_str(&format!("fuel cnt: {:14}\n", self.inst_counter));
+        output.push_str(&format!("pc: {:22x}\n", self.pc));
+        output.push_str(&format!("fuel cnt: {:16}\n", self.inst_counter));
 
         for i in 0..32 {
             let reg = Reg(i);

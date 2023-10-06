@@ -1,5 +1,4 @@
 use crate::{
-    disassembler::Disassembler,
     emulator::{Emulator, InstCache},
     memory::MemMap,
 };
@@ -31,8 +30,13 @@ impl TimeTravel {
     pub fn step(&mut self, amount: i32) -> Option<u64> {
         if amount >= 0 {
             for _ in 0..amount {
-                if let Some(exit_code) = self.current.fetch_and_execute(self.inst_cache.as_mut()) {
-                    return Some(exit_code);
+                match self.current.fetch_and_execute(self.inst_cache.as_mut()) {
+                    Ok(Some(exit_code)) => return Some(exit_code),
+                    Ok(None) => {}
+                    Err(e) => {
+                        self.current.stderr.push_str(&e.to_string());
+                        return None;
+                    }
                 }
 
                 let i = self.current.inst_counter / B_STATE_INTERVAL;
@@ -48,7 +52,7 @@ impl TimeTravel {
                     }
                 }
 
-                assert!(self.history.len() <= B_STATE_LIMIT);
+                debug_assert!(self.history.len() <= B_STATE_LIMIT);
             }
         } else {
             // find closest one
@@ -66,7 +70,14 @@ impl TimeTravel {
 
                     for _ in 0..r {
                         // guaranteed to not return
-                        self.current.fetch_and_execute(self.inst_cache.as_mut());
+                        match self.current.fetch_and_execute(self.inst_cache.as_mut()) {
+                            Ok(Some(exit_code)) => return Some(exit_code),
+                            Ok(None) => {}
+                            Err(e) => {
+                                self.current.stderr.push_str(&e.to_string());
+                                return None;
+                            }
+                        }
                     }
                 }
                 None => {

@@ -1,5 +1,3 @@
-use std::fmt::Display;
-
 use crate::register::{FReg, Reg, RA, SP};
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]

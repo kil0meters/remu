@@ -78,13 +78,13 @@ fn main() -> Result<()> {
     }
 
     if args.interactive {
-        let mut app = ui::App::new(emulator);
+        let mut app = ui::App::new(emulator)?;
         app.main_loop()
     } else {
         let mut inst_cache = args.cache.then(InstCache::default);
 
         loop {
-            if let Some(exit_code) = emulator.fetch_and_execute(inst_cache.as_mut()) {
+            if let Some(exit_code) = emulator.fetch_and_execute(inst_cache.as_mut())? {
                 print!("{}", emulator.stdout);
                 eprintln!("------------------------------");
                 eprintln!("Program exited with code {exit_code}");

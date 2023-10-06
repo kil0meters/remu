@@ -1,5 +1,3 @@
-use std::cmp::Ordering;
-
 use elf::{endian::EndianParse, ElfBytes};
 
 use crate::{
@@ -109,7 +107,7 @@ impl Disassembler {
     }
 
     /// disassembles ~n instructions around pc
-    pub fn disassemble_pc_relative(&self, memory: &Memory, start_pc: u64, mut n: u64) -> String {
+    pub fn disassemble_pc_relative(&self, memory: &Memory, start_pc: u64, n: u64) -> String {
         let mut writer = String::new();
 
         let mut pc = start_pc - 4 * n;
@@ -117,7 +115,7 @@ impl Disassembler {
         let mut count_after = 0;
 
         while count_after < n {
-            let inst_data = memory.load_u32(pc);
+            let inst_data = memory.load_u32(pc).unwrap_or(0);
             let (inst, size) = Inst::decode(inst_data);
 
             writer.push_str(&format!("{}\n", self.disassemble_inst(inst, pc)));

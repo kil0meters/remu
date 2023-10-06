@@ -1,5 +1,3 @@
-use std::ptr;
-
 use elf::{
     abi::{DT_NEEDED, PT_DYNAMIC, PT_INTERP, PT_LOAD, PT_PHDR},
     endian::{AnyEndian, EndianParse},
@@ -18,6 +16,7 @@ pub type MemMap<K, V> = fnv::FnvHashMap<K, V>;
 use crate::{
     disassembler::Disassembler,
     emulator::{FileDescriptor, STACK_START},
+    error::RVError,
 };
 
 // only this constant should be changed.
@@ -144,7 +143,8 @@ impl Memory {
                     );
 
                     self.create_pages(addr_start, segment.p_memsz);
-                    self.write_n(data, addr_start, segment.p_memsz);
+                    self.write_n(data, addr_start, segment.p_memsz)
+                        .expect("Failed to load executable into memory");
 
                     data_end = data_end.max(offset + segment.p_vaddr + segment.p_memsz);
                 }
@@ -167,11 +167,14 @@ impl Memory {
             stack_pointer: STACK_START,
             heap_pointer: 0,
             pages: MemMap::default(),
+            disassembler: None,
             program_header: Default::default(),
         };
 
         memory.create_pages(0, data.len() as u64);
-        memory.write_n(data, 0, data.len() as u64);
+        memory
+            .write_n(data, 0, data.len() as u64)
+            .expect("Failed to write data for test");
 
         memory
     }
@@ -260,19 +263,19 @@ impl Memory {
         addr: u64,
         offset: u64,
         len: u64,
-    ) -> i64 {
+    ) -> Result<i64, RVError> {
         // TODO: assert offset is multiple of pagesize
         let data = &descriptor.data[(offset as usize)..(offset as usize + len as usize)];
 
-        assert_eq!(data.len() as u64, len);
+        debug_assert_eq!(data.len() as u64, len);
 
         let addr_start = self.mmap(addr, data.len() as u64);
 
         if addr_start >= 0 {
-            self.write_n(data, addr_start as u64, len);
+            self.write_n(data, addr_start as u64, len)?;
         }
 
-        addr_start
+        Ok(addr_start)
     }
 
     // pub fn munmap(&mut self, ptr: u64) -> u64 {
@@ -286,59 +289,59 @@ impl Memory {
     //     }
     // }
 
-    pub fn load_u64(&self, addr: u64) -> u64 {
+    pub fn load_u64(&self, addr: u64) -> Result<u64, RVError> {
         let virt_addr = addr & PAGE_MASK;
         if virt_addr < PAGE_MASK - 8 {
             // fast path
             // SAFETY: guaranteed to not cross page boundary
-            unsafe { self.data_ptr_const(addr).cast::<u64>().read_unaligned() }
+            unsafe { Ok(self.data_ptr_const(addr)?.cast::<u64>().read_unaligned()) }
         } else {
             // slow path
-            return (self.load_u8(addr) as u64)
-                | ((self.load_u8(addr + 1) as u64) << 8)
-                | ((self.load_u8(addr + 2) as u64) << 16)
-                | ((self.load_u8(addr + 3) as u64) << 24)
-                | ((self.load_u8(addr + 4) as u64) << 32)
-                | ((self.load_u8(addr + 5) as u64) << 40)
-                | ((self.load_u8(addr + 6) as u64) << 48)
-                | ((self.load_u8(addr + 7) as u64) << 56);
+            return Ok((self.load_u8(addr)? as u64)
+                | ((self.load_u8(addr + 1)? as u64) << 8)
+                | ((self.load_u8(addr + 2)? as u64) << 16)
+                | ((self.load_u8(addr + 3)? as u64) << 24)
+                | ((self.load_u8(addr + 4)? as u64) << 32)
+                | ((self.load_u8(addr + 5)? as u64) << 40)
+                | ((self.load_u8(addr + 6)? as u64) << 48)
+                | ((self.load_u8(addr + 7)? as u64) << 56));
         }
     }
 
-    pub fn load_u32(&self, addr: u64) -> u32 {
+    pub fn load_u32(&self, addr: u64) -> Result<u32, RVError> {
         let virt_addr = addr & PAGE_MASK;
         if virt_addr < PAGE_MASK - 4 {
             // fast path
             // SAFETY: guaranteed to not cross page boundary
-            unsafe { self.data_ptr_const(addr).cast::<u32>().read_unaligned() }
+            unsafe { Ok(self.data_ptr_const(addr)?.cast::<u32>().read_unaligned()) }
         } else {
             // slow path
-            return (self.load_u8(addr) as u32)
-                | ((self.load_u8(addr + 1) as u32) << 8)
-                | ((self.load_u8(addr + 2) as u32) << 16)
-                | ((self.load_u8(addr + 3) as u32) << 24);
+            return Ok((self.load_u8(addr)? as u32)
+                | ((self.load_u8(addr + 1)? as u32) << 8)
+                | ((self.load_u8(addr + 2)? as u32) << 16)
+                | ((self.load_u8(addr + 3)? as u32) << 24));
         }
     }
 
-    pub fn load_u16(&self, addr: u64) -> u16 {
+    pub fn load_u16(&self, addr: u64) -> Result<u16, RVError> {
         let virt_addr = addr & PAGE_MASK;
         if virt_addr < PAGE_MASK - 2 {
             // fast path
             // SAFETY: guaranteed to not cross page boundary
-            unsafe { self.data_ptr_const(addr).cast::<u16>().read_unaligned() }
+            unsafe { Ok(self.data_ptr_const(addr)?.cast::<u16>().read_unaligned()) }
         } else {
             // slow path
-            return (self.load_u8(addr) as u16) //.
-                | ((self.load_u8(addr + 1) as u16) << 8);
+            return Ok((self.load_u8(addr)? as u16) //.
+                | ((self.load_u8(addr + 1)? as u16) << 8));
         }
     }
 
-    pub fn load_u8(&self, index: u64) -> u8 {
+    pub fn load_u8(&self, index: u64) -> Result<u8, RVError> {
         // SAFETY: it's impossible for loading a byte to cross a page boundry.
-        unsafe { *self.data_ptr_const(index) }
+        unsafe { self.data_ptr_const(index).map(|x| *x) }
     }
 
-    fn data_ptr_mut(&mut self, addr: u64) -> *mut u8 {
+    fn data_ptr_mut(&mut self, addr: u64) -> Result<*mut u8, RVError> {
         // try loading from an page
         let phys_addr = addr & !PAGE_MASK;
         let virt_addr = addr & PAGE_MASK;
@@ -348,14 +351,14 @@ impl Memory {
         if let Some(page) = self.pages.get_mut(&phys_addr) {
             unsafe {
                 // SAFETY: virt_addr < PAGE_SIZE
-                return page.as_mut_ptr().add(virt_addr as usize);
+                return Ok(page.as_mut_ptr().add(virt_addr as usize));
             }
         }
 
         if addr <= STACK_START {
             while self.stack_pointer > addr {
                 if self.stack_pointer - addr >= 0xfffff {
-                    panic!("Invalid memory location: {addr:x}");
+                    return Err(RVError::SegmentationFault);
                 }
 
                 // move stack pointer down by a page
@@ -368,14 +371,14 @@ impl Memory {
             let page = self.pages.get_mut(&phys_addr).unwrap();
             unsafe {
                 // SAFETY: virt_addr < PAGE_SIZE
-                return page.as_mut_ptr().add(virt_addr as usize);
+                return Ok(page.as_mut_ptr().add(virt_addr as usize));
             }
         } else {
-            panic!("Attempted to load to address not mapped to memory: {addr:x}");
+            return Err(RVError::SegmentationFault);
         }
     }
 
-    fn data_ptr_const(&self, addr: u64) -> *const u8 {
+    fn data_ptr_const(&self, addr: u64) -> Result<*const u8, RVError> {
         // try loading from an page
         let phys_addr = addr & !PAGE_MASK;
         let virt_addr = addr & PAGE_MASK;
@@ -385,79 +388,97 @@ impl Memory {
         if let Some(page) = self.pages.get(&phys_addr) {
             unsafe {
                 // SAFETY: virt_addr < PAGE_SIZE
-                return page.as_ptr().add(virt_addr as usize);
+                return Ok(page.as_ptr().add(virt_addr as usize));
             }
         } else {
-            return EMPTY_PAGE.as_ptr();
+            return Err(RVError::SegmentationFault);
         }
     }
 
-    pub fn store_u64(&mut self, addr: u64, data: u64) {
+    pub fn store_u64(&mut self, addr: u64, data: u64) -> Result<(), RVError> {
         let virt_addr = addr & PAGE_MASK;
         if virt_addr < PAGE_MASK - 8 {
             // fast path
             // SAFETY: guaranteed to not cross page boundary
-            unsafe { self.data_ptr_mut(addr).cast::<u64>().write_unaligned(data) }
+            unsafe {
+                self.data_ptr_mut(addr)?.cast::<u64>().write_unaligned(data);
+            }
         } else {
             // slow path
-            self.store_u8(addr + 7, (data >> 56) as u8);
-            self.store_u8(addr + 6, (data >> 48) as u8);
-            self.store_u8(addr + 5, (data >> 40) as u8);
-            self.store_u8(addr + 4, (data >> 32) as u8);
-            self.store_u8(addr + 3, (data >> 24) as u8);
-            self.store_u8(addr + 2, (data >> 16) as u8);
-            self.store_u8(addr + 1, (data >> 8) as u8);
-            self.store_u8(addr + 0, (data) as u8);
+            self.store_u8(addr + 7, (data >> 56) as u8)?;
+            self.store_u8(addr + 6, (data >> 48) as u8)?;
+            self.store_u8(addr + 5, (data >> 40) as u8)?;
+            self.store_u8(addr + 4, (data >> 32) as u8)?;
+            self.store_u8(addr + 3, (data >> 24) as u8)?;
+            self.store_u8(addr + 2, (data >> 16) as u8)?;
+            self.store_u8(addr + 1, (data >> 8) as u8)?;
+            self.store_u8(addr + 0, (data) as u8)?;
         }
+
+        Ok(())
     }
 
-    pub fn store_u32(&mut self, addr: u64, data: u32) {
+    pub fn store_u32(&mut self, addr: u64, data: u32) -> Result<(), RVError> {
         let virt_addr = addr & PAGE_MASK;
         if virt_addr < PAGE_MASK - 4 {
             // fast path
             // SAFETY: guaranteed to not cross page boundary
-            unsafe { self.data_ptr_mut(addr).cast::<u32>().write_unaligned(data) }
+            unsafe {
+                self.data_ptr_mut(addr)?.cast::<u32>().write_unaligned(data);
+            }
         } else {
             // slow path
-            self.store_u8(addr + 3, (data >> 24) as u8);
-            self.store_u8(addr + 2, (data >> 16) as u8);
-            self.store_u8(addr + 1, (data >> 8) as u8);
-            self.store_u8(addr + 0, (data) as u8);
+            self.store_u8(addr + 3, (data >> 24) as u8)?;
+            self.store_u8(addr + 2, (data >> 16) as u8)?;
+            self.store_u8(addr + 1, (data >> 8) as u8)?;
+            self.store_u8(addr + 0, (data) as u8)?;
         }
+
+        Ok(())
     }
 
-    pub fn store_u16(&mut self, addr: u64, data: u16) {
+    pub fn store_u16(&mut self, addr: u64, data: u16) -> Result<(), RVError> {
         let virt_addr = addr & PAGE_MASK;
         if virt_addr < PAGE_MASK - 2 {
             // fast path
             // SAFETY: guaranteed to not cross page boundary
-            unsafe { self.data_ptr_mut(addr).cast::<u16>().write_unaligned(data) }
+            unsafe {
+                self.data_ptr_mut(addr)?.cast::<u16>().write_unaligned(data);
+            }
         } else {
             // slow path
-            self.store_u8(addr + 1, (data >> 8) as u8);
-            self.store_u8(addr + 0, (data) as u8);
+            self.store_u8(addr + 1, (data >> 8) as u8)?;
+            self.store_u8(addr + 0, (data) as u8)?;
         }
+
+        Ok(())
     }
 
-    pub fn store_u8(&mut self, idx: u64, data: u8) {
+    pub fn store_u8(&mut self, idx: u64, data: u8) -> Result<(), RVError> {
         // SAFETY: guaranteed to not cross page boundary
-        unsafe { self.data_ptr_mut(idx).write_unaligned(data) }
+        unsafe {
+            self.data_ptr_mut(idx)?.write_unaligned(data);
+        }
+
+        Ok(())
     }
 
-    pub fn write_n(&mut self, s: &[u8], addr: u64, len: u64) {
+    pub fn write_n(&mut self, s: &[u8], addr: u64, len: u64) -> Result<(), RVError> {
         for (i, b) in s.iter().take(len as usize).enumerate() {
-            self.store_u8(addr + i as u64, *b);
+            self.store_u8(addr + i as u64, *b)?;
         }
         for i in s.len() as u64..len {
-            self.store_u8(addr + i, 0);
+            self.store_u8(addr + i, 0)?;
         }
+
+        Ok(())
     }
 
-    pub fn read_string_n(&mut self, mut addr: u64, len: u64) -> String {
+    pub fn read_string_n(&mut self, mut addr: u64, len: u64) -> Result<String, RVError> {
         let mut data = Vec::new();
         // read bytes until we get null
         for _ in 0..len {
-            let c = self.load_u8(addr);
+            let c = self.load_u8(addr)?;
             addr += 1;
 
             if c == b'\0' {
@@ -468,18 +489,23 @@ impl Memory {
         }
 
         let s = String::from_utf8_lossy(&data);
-        s.into()
+        Ok(s.into())
     }
 
-    pub fn read_file(&mut self, file_descriptor: &mut FileDescriptor, buf: u64, count: u64) -> i64 {
+    pub fn read_file(
+        &mut self,
+        file_descriptor: &mut FileDescriptor,
+        buf: u64,
+        count: u64,
+    ) -> Result<i64, RVError> {
         let o = file_descriptor.offset as usize;
         let max = (o + count as usize).min(file_descriptor.data.len());
 
         let data = &file_descriptor.data[o..max];
 
-        self.write_n(data, buf, data.len() as u64);
+        self.write_n(data, buf, data.len() as u64)?;
 
-        data.len() as i64
+        Ok(data.len() as i64)
     }
 
     pub fn hexdump(&self, mut addr: u64, length: u64) -> String {
@@ -491,7 +517,7 @@ impl Memory {
         for _ in 0..length {
             let mut line = String::with_capacity(33);
             for _ in 0..32 {
-                let c = self.load_u8(addr);
+                let c = self.load_u8(addr).unwrap_or(0);
                 line.push(
                     if c.is_ascii_graphic() || c.is_ascii_alphabetic() || c == b' ' {
                         c

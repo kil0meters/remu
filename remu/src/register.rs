@@ -1,3 +1,5 @@
+#![allow(unused)]
+
 use std::{
     fmt::Display,
     ops::{Index, IndexMut},

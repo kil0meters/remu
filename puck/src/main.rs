@@ -1,22 +1,15 @@
-// #![forbid(unsafe_code)]
-
 use anyhow::Result;
 use clap::Parser;
-use disassembler::Disassembler;
 use elf::{endian::AnyEndian, ElfBytes};
-use emulator::{Emulator, InstCache};
 use log::LevelFilter;
-use memory::Memory;
 use simplelog::{ConfigBuilder, SimpleLogger};
 
-mod auxvec;
-mod disassembler;
-mod emulator;
-mod instruction;
-mod memory;
-mod register;
-mod syscalls;
-mod time_travel;
+use remu::{
+    disassembler::Disassembler,
+    emulator::{Emulator, InstCache},
+    memory::Memory,
+};
+
 mod ui;
 
 #[derive(Parser)]

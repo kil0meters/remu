@@ -1,0 +1,16 @@
+[package]
+name = "puck"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+anyhow = "1.0.69"
+clap = { version = "4.1.4", features = ["derive"] }
+clap-verbosity-flag = "2.0.0"
+crossterm = "0.27.0"
+ratatui = "0.23.0"
+ratatui-textarea = "0.3"
+remu = { path = "../remu" }
+simplelog = "0.12.1"
+log = "0.4.17"
+elf = "0.7.1"

@@ -115,7 +115,7 @@ impl Disassembler {
         let mut count_after = 0;
 
         while count_after < n {
-            let inst_data = memory.load_u32(pc).unwrap_or(0);
+            let inst_data = memory.load(pc).unwrap_or(0);
             let (inst, size) = Inst::decode(inst_data);
 
             writer.push_str(&format!("{}\n", self.disassemble_inst(inst, pc)));

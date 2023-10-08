@@ -1,3 +1,8 @@
+use std::{
+    mem,
+    ops::{Index, IndexMut},
+};
+
 use elf::{
     abi::{DT_NEEDED, PT_DYNAMIC, PT_INTERP, PT_LOAD, PT_PHDR},
     endian::{AnyEndian, EndianParse},
@@ -19,14 +24,9 @@ use crate::{
     error::RVError,
 };
 
-// only this constant should be changed.
-// but it actually can't be changed since the linker complains :)
 const PAGE_BITS: u64 = 12;
-
 pub const PAGE_SIZE: u64 = 1 << PAGE_BITS;
 pub const PAGE_MASK: u64 = (1 << PAGE_BITS) - 1;
-type MemoryPage = [u8; PAGE_SIZE as usize];
-const EMPTY_PAGE: MemoryPage = [0; PAGE_SIZE as usize];
 
 pub const LD_LINUX_DATA: &'static [u8] = include_bytes!("../../res/ld-linux-riscv64-lp64d.so.1");
 pub const LIBC_DATA: &'static [u8] = include_bytes!("../../res/libc.so.6");
@@ -39,6 +39,22 @@ pub const LIBCPP_FILE_DESCRIPTOR: i64 = 11;
 pub const LIBM_FILE_DESCRIPTOR: i64 = 12;
 pub const LIBGCCS_FILE_DESCRIPTOR: i64 = 13;
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct HeapIndex(u8);
+
+impl Index<HeapIndex> for [Vec<u8>] {
+    type Output = Vec<u8>;
+    fn index(&self, index: HeapIndex) -> &Self::Output {
+        &self[index.0 as usize]
+    }
+}
+
+impl IndexMut<HeapIndex> for [Vec<u8>] {
+    fn index_mut(&mut self, index: HeapIndex) -> &mut Self::Output {
+        &mut self[index.0 as usize]
+    }
+}
+
 #[derive(Default, Clone)]
 pub struct ProgramHeaderInfo {
     pub entry: u64,
@@ -49,15 +65,12 @@ pub struct ProgramHeaderInfo {
 
 #[derive(Clone)]
 pub struct Memory {
-    // No fancy hashing algorithm here as we're not concerned about mittigating denial of service
-    // attacks, and we want our program to be deterministic.
-    pub pages: MemMap<u64, MemoryPage>,
-
-    // the address to the end of the heap
-    pub heap_pointer: u64,
-
-    // address to the top of the stack, page aligned
-    pub stack_pointer: u64,
+    // buffer 0:     program data
+    // buffer 1:     heap
+    // buffer 2:     dynamic linker (if available)
+    // buffer 3-245: mmap regions
+    // buffer 255:   stack
+    buffers: [Vec<u8>; 256],
 
     // the address of entry to the program
     pub entry: u64,
@@ -65,18 +78,23 @@ pub struct Memory {
     pub program_header: ProgramHeaderInfo,
 
     pub disassembler: Option<Disassembler>,
+
+    // the number of times mmap has been called
+    pub mmap_count: u64,
 }
 
 impl Memory {
     pub fn load_elf<T: EndianParse>(elf: ElfBytes<T>, disassemble: bool) -> Self {
         let mut memory = Memory {
+            buffers: vec![vec![]; 256].try_into().expect("static"),
             entry: 0,
             program_header: ProgramHeaderInfo::default(),
-            heap_pointer: 0,
-            stack_pointer: STACK_START + 1,
-            pages: MemMap::default(),
+            mmap_count: 3,
             disassembler: disassemble.then(Disassembler::new),
         };
+
+        // add an initial page to the stack
+        memory.buffers[255].resize(0x1000, 0);
 
         if let Some(dias) = memory.disassembler.as_mut() {
             dias.add_elf_symbols(&elf, 0);
@@ -97,7 +115,7 @@ impl Memory {
                 let ld_elf = ElfBytes::<AnyEndian>::minimal_parse(LD_LINUX_DATA).unwrap();
                 log::info!("Loading dynamically linked executable.");
 
-                let ld_offset = 0x80000000;
+                let ld_offset = memory.heap_end(HeapIndex(2));
 
                 memory.map_segments(ld_offset, &ld_elf);
                 memory.map_segments(0x0, &elf);
@@ -118,8 +136,6 @@ impl Memory {
     }
 
     fn map_segments<'data, E: EndianParse>(&mut self, offset: u64, elf: &ElfBytes<'data, E>) {
-        let mut data_end = self.heap_pointer.max(offset);
-
         let segments = elf.segments().unwrap();
         for segment in segments {
             match segment.p_type {
@@ -142,11 +158,14 @@ impl Memory {
                         segment.p_memsz, addr_start, segment.p_type
                     );
 
-                    self.create_pages(addr_start, segment.p_memsz);
+                    // grows a heap to contain address, if necessary
+                    let index = Self::heap_index(addr_start + segment.p_memsz);
+                    if self.heap_end(index) < addr_start + (segment.p_memsz | PAGE_MASK) {
+                        self.grow_heap(addr_start + (segment.p_memsz | PAGE_MASK));
+                    }
+
                     self.write_n(data, addr_start, segment.p_memsz)
                         .expect("Failed to load executable into memory");
-
-                    data_end = data_end.max(offset + segment.p_vaddr + segment.p_memsz);
                 }
                 PT_INTERP => {
                     log::debug!("interp: {segment:x?}");
@@ -156,22 +175,21 @@ impl Memory {
                 }
             }
         }
-
-        self.heap_pointer = data_end;
     }
 
     #[cfg(test)]
     pub fn from_raw(data: &[u8]) -> Self {
         let mut memory = Memory {
             entry: 0,
-            stack_pointer: STACK_START,
-            heap_pointer: 0,
-            pages: MemMap::default(),
+            mmap_count: 0,
             disassembler: None,
             program_header: Default::default(),
+            buffers: vec![vec![]; 256].try_into().expect("static"),
         };
 
-        memory.create_pages(0, data.len() as u64);
+        memory.buffers[255].resize(0x1000, 0);
+
+        memory.grow_heap(data.len() as u64);
         memory
             .write_n(data, 0, data.len() as u64)
             .expect("Failed to write data for test");
@@ -181,80 +199,92 @@ impl Memory {
 
     // returns the number of bytes of memory allocated
     pub fn usage(&self) -> u64 {
-        self.pages.len() as u64 * PAGE_SIZE
+        return 0;
+
+        // this is way too slow, should be fixed
+        // let mut total = 0;
+        // for buffer in &self.buffers {
+        //     total += buffer.len();
+        // }
+        // return total as u64;
     }
 
     pub fn brk(&mut self, new_end: u64) -> u64 {
-        // if break point is invalid, we return the current heap pointer
-        if new_end < self.heap_pointer || new_end >= self.stack_pointer {
-            return self.heap_pointer;
+        // ensure address is within heap bounds
+        let val = new_end >> 56;
+        if val == 1 {
+            self.grow_heap(new_end);
         }
 
-        log::info!("Changing heap by: {} bytes", new_end - self.heap_pointer);
-
-        // the address of the last valid page on the heap
-        let phys_heap_addr = self.heap_pointer & !PAGE_MASK;
-
-        match phys_heap_addr.cmp(&new_end) {
-            std::cmp::Ordering::Less => {
-                for addr in (phys_heap_addr + PAGE_SIZE..=new_end).step_by(PAGE_SIZE as usize) {
-                    debug_assert!(!self.pages.contains_key(&addr));
-                    self.pages.insert(addr, EMPTY_PAGE);
-                    self.heap_pointer += PAGE_SIZE;
-                }
-            }
-            std::cmp::Ordering::Equal => {
-                self.heap_pointer = new_end;
-            }
-            std::cmp::Ordering::Greater => {
-                panic!("Reducing heap size is not yet supported.");
-            }
-        }
-
-        new_end
+        return 0x0100000000000000 + self.buffers[1].len() as u64;
     }
 
-    // creates pages that cover the range [start_addr, start_addr+size)
-    // does not overwrite
-    fn create_pages(&mut self, start_addr: u64, size: u64) {
-        let phys_addr = start_addr & !PAGE_MASK;
-        for addr in (phys_addr..=(start_addr + size)).step_by(PAGE_SIZE as usize) {
-            if !self.pages.contains_key(&addr) {
-                self.pages.insert(addr, EMPTY_PAGE);
+    // sets a heap size to new_end
+    fn grow_heap(&mut self, new_addr: u64) {
+        let heap_index = Self::heap_index(new_addr);
+        let heap_size = new_addr & 0x00FFFFFFFFFFFFFF;
+        match heap_index.0 {
+            0..=254 => {
+                log::debug!("Growing heap {} to size = {:x}", heap_index.0, heap_size);
+                self.buffers[heap_index].resize(heap_size as usize, 0);
+                log::debug!("heap size: {:x}", self.buffers[heap_index].len());
+            }
+            255 => {
+                unimplemented!();
             }
         }
+    }
+
+    /// gets the heap index of a given address
+    fn heap_index(addr: u64) -> HeapIndex {
+        HeapIndex((addr >> 56) as u8)
+    }
+
+    /// gets the index into the heap
+    fn heap_addr(addr: u64) -> u64 {
+        0x00FFFFFFFFFFFFFF & addr
+    }
+
+    /// returns the end of a heap with a given index
+    fn heap_end(&self, index: HeapIndex) -> u64 {
+        0x0100000000000000 * index.0 as u64 + self.buffers[index].len() as u64
     }
 
     pub fn mmap(&mut self, addr: u64, size: u64) -> i64 {
         log::info!("MMAP REGION: 0x{:x}-0x{:x}", addr, addr + size);
-        let addr = if addr == 0 {
-            let region_start = 0x2000000000000000u64;
 
-            // put region after previous region
-
-            let mut max_addr = 0;
-            for (region, _) in &self.pages {
-                // not stack regions
-                if *region < 0x7000000000000000 {
-                    max_addr = max_addr.max(region + PAGE_SIZE);
-                }
-            }
-
-            region_start.max(max_addr)
-        } else {
-            addr
-        };
-
-        let phys_addr = addr & !PAGE_MASK;
-        log::info!("MMAP REGION: 0x{:x}-0x{:x}", addr, addr + size);
-
-        // This overwrites the data if the addr specified happens to overlap with an existing
-        // mapping. But this is the _correct_ behavior according to `man 2 mmap`
-        for addr in (phys_addr..=(addr + size)).step_by(PAGE_SIZE as usize) {
-            self.pages.insert(addr, EMPTY_PAGE);
+        // we can only have a maximum of 254 memory mapped regions
+        if self.mmap_count > 254 {
+            return -1;
         }
 
-        addr as i64
+        // if the user does not ask for an address, we start a new buffer
+        if addr == 0 {
+            let addr = 0x0100000000000000 * self.mmap_count;
+            self.mmap_count += 1;
+
+            // take note to align to page boundary
+            self.grow_heap(addr + (size | PAGE_MASK));
+
+            addr as i64
+        }
+        // if the user asks for a specific block of memory
+        else {
+            let heap_index = Self::heap_index(addr);
+
+            // only grow the heap of the memory region extends past the current heap end
+            if self.heap_end(heap_index) < addr + (size | PAGE_MASK) {
+                self.grow_heap(addr + (size | PAGE_MASK));
+            }
+
+            // This overwrites the data if the addr specified happens to overlap with an existing
+            // mapping. But this is the _correct_ behavior according to `man 2 mmap`
+            for i in addr..(addr + (size | PAGE_MASK)) {
+                self.store(i, 0u8).expect("This shoudl not fail");
+            }
+
+            addr as i64
+        }
     }
 
     pub fn mmap_file(
@@ -289,186 +319,114 @@ impl Memory {
     //     }
     // }
 
-    pub fn load_u64(&self, addr: u64) -> Result<u64, RVError> {
-        let virt_addr = addr & PAGE_MASK;
-        if virt_addr < PAGE_MASK - 8 {
-            // fast path
-            // SAFETY: guaranteed to not cross page boundary
-            unsafe { Ok(self.data_ptr_const(addr)?.cast::<u64>().read_unaligned()) }
-        } else {
-            // slow path
-            return Ok((self.load_u8(addr)? as u64)
-                | ((self.load_u8(addr + 1)? as u64) << 8)
-                | ((self.load_u8(addr + 2)? as u64) << 16)
-                | ((self.load_u8(addr + 3)? as u64) << 24)
-                | ((self.load_u8(addr + 4)? as u64) << 32)
-                | ((self.load_u8(addr + 5)? as u64) << 40)
-                | ((self.load_u8(addr + 6)? as u64) << 48)
-                | ((self.load_u8(addr + 7)? as u64) << 56));
-        }
-    }
+    pub fn store<T>(&mut self, addr: u64, data: T) -> Result<(), RVError> {
+        let heap_index = Self::heap_index(addr);
+        let heap_addr = Self::heap_addr(addr);
 
-    pub fn load_u32(&self, addr: u64) -> Result<u32, RVError> {
-        let virt_addr = addr & PAGE_MASK;
-        if virt_addr < PAGE_MASK - 4 {
-            // fast path
-            // SAFETY: guaranteed to not cross page boundary
-            unsafe { Ok(self.data_ptr_const(addr)?.cast::<u32>().read_unaligned()) }
-        } else {
-            // slow path
-            return Ok((self.load_u8(addr)? as u32)
-                | ((self.load_u8(addr + 1)? as u32) << 8)
-                | ((self.load_u8(addr + 2)? as u32) << 16)
-                | ((self.load_u8(addr + 3)? as u32) << 24));
-        }
-    }
+        let buffer = &mut self.buffers[heap_index];
+        // log::debug!(
+        //     "storing {} bytes to {addr:x}, bufsize={:x}",
+        //     mem::size_of::<T>(),
+        //     buffer.len()
+        // );
+        // log::debug!(
+        //     "{:x} <= {:x}",
+        //     heap_addr + mem::size_of::<T>() as u64,
+        //     buffer.len()
+        // );
 
-    pub fn load_u16(&self, addr: u64) -> Result<u16, RVError> {
-        let virt_addr = addr & PAGE_MASK;
-        if virt_addr < PAGE_MASK - 2 {
-            // fast path
-            // SAFETY: guaranteed to not cross page boundary
-            unsafe { Ok(self.data_ptr_const(addr)?.cast::<u16>().read_unaligned()) }
-        } else {
-            // slow path
-            return Ok((self.load_u8(addr)? as u16) //.
-                | ((self.load_u8(addr + 1)? as u16) << 8));
-        }
-    }
+        if heap_index == HeapIndex(255) {
+            let mut stack_end = STACK_START - buffer.len() as u64;
 
-    pub fn load_u8(&self, index: u64) -> Result<u8, RVError> {
-        // SAFETY: it's impossible for loading a byte to cross a page boundry.
-        unsafe { self.data_ptr_const(index).map(|x| *x) }
-    }
-
-    fn data_ptr_mut(&mut self, addr: u64) -> Result<*mut u8, RVError> {
-        // try loading from an page
-        let phys_addr = addr & !PAGE_MASK;
-        let virt_addr = addr & PAGE_MASK;
-
-        debug_assert!(virt_addr < PAGE_SIZE);
-
-        if let Some(page) = self.pages.get_mut(&phys_addr) {
-            unsafe {
-                // SAFETY: virt_addr < PAGE_SIZE
-                return Ok(page.as_mut_ptr().add(virt_addr as usize));
-            }
-        }
-
-        if addr <= STACK_START {
-            while self.stack_pointer > addr {
-                if self.stack_pointer - addr >= 0xfffff {
+            while stack_end > addr {
+                // don't resize of bigger than a page
+                if stack_end - addr > 0x1000 {
                     return Err(RVError::SegmentationFault);
                 }
 
-                // move stack pointer down by a page
-                self.stack_pointer -= PAGE_SIZE;
+                // resize and shift
+                // manual vec implementation here
+                buffer.extend_from_within(0..buffer.len());
 
-                debug_assert!(!self.pages.contains_key(&self.stack_pointer));
-                self.pages.insert(self.stack_pointer, EMPTY_PAGE);
+                stack_end = STACK_START - buffer.len() as u64;
             }
 
-            let page = self.pages.get_mut(&phys_addr).unwrap();
             unsafe {
-                // SAFETY: virt_addr < PAGE_SIZE
-                return Ok(page.as_mut_ptr().add(virt_addr as usize));
+                // SAFETY: if we got to this point the stack has been resized to the proper size already
+                buffer
+                    .as_mut_ptr()
+                    .add((addr - stack_end) as usize)
+                    .cast::<T>()
+                    .write_unaligned(data);
+            }
+
+            Ok(())
+        } else if heap_addr as usize + mem::size_of::<T>() <= buffer.len() {
+            unsafe {
+                // SAFETY: Write is guaranteed to be within buffer bounds
+                buffer
+                    .as_mut_ptr()
+                    .add(heap_addr as usize)
+                    .cast::<T>()
+                    .write_unaligned(data);
+
+                Ok(())
             }
         } else {
             return Err(RVError::SegmentationFault);
         }
     }
 
-    fn data_ptr_const(&self, addr: u64) -> Result<*const u8, RVError> {
-        // try loading from an page
-        let phys_addr = addr & !PAGE_MASK;
-        let virt_addr = addr & PAGE_MASK;
+    pub fn load<T>(&self, addr: u64) -> Result<T, RVError> {
+        let heap_index = Self::heap_index(addr);
+        let heap_addr = Self::heap_addr(addr);
 
-        debug_assert!(virt_addr < PAGE_SIZE);
+        let buffer = &self.buffers[heap_index];
+        // log::debug!(
+        //     "loading {} bytes from {addr:x}, bufsize={:x}",
+        //     mem::size_of::<T>(),
+        //     buffer.len()
+        // );
 
-        if let Some(page) = self.pages.get(&phys_addr) {
+        if heap_index == HeapIndex(255) {
+            let stack_end = STACK_START - buffer.len() as u64;
+
+            if addr > stack_end {
+                // SAFETY: guaranteed to be on stack
+                unsafe {
+                    return Ok(buffer
+                        .as_ptr()
+                        .add((addr - stack_end) as usize)
+                        .cast::<T>()
+                        .read_unaligned());
+                }
+            } else {
+                return Err(RVError::SegmentationFault);
+            }
+        } else if heap_addr as usize + mem::size_of::<T>() <= buffer.len() {
             unsafe {
-                // SAFETY: virt_addr < PAGE_SIZE
-                return Ok(page.as_ptr().add(virt_addr as usize));
+                // SAFETY: Read is guaranteed to be within buffer bounds
+                return Ok(buffer
+                    .as_ptr()
+                    .add(heap_addr as usize)
+                    .cast::<T>()
+                    .read_unaligned());
             }
         } else {
             return Err(RVError::SegmentationFault);
         }
-    }
-
-    pub fn store_u64(&mut self, addr: u64, data: u64) -> Result<(), RVError> {
-        let virt_addr = addr & PAGE_MASK;
-        if virt_addr < PAGE_MASK - 8 {
-            // fast path
-            // SAFETY: guaranteed to not cross page boundary
-            unsafe {
-                self.data_ptr_mut(addr)?.cast::<u64>().write_unaligned(data);
-            }
-        } else {
-            // slow path
-            self.store_u8(addr + 7, (data >> 56) as u8)?;
-            self.store_u8(addr + 6, (data >> 48) as u8)?;
-            self.store_u8(addr + 5, (data >> 40) as u8)?;
-            self.store_u8(addr + 4, (data >> 32) as u8)?;
-            self.store_u8(addr + 3, (data >> 24) as u8)?;
-            self.store_u8(addr + 2, (data >> 16) as u8)?;
-            self.store_u8(addr + 1, (data >> 8) as u8)?;
-            self.store_u8(addr + 0, (data) as u8)?;
-        }
-
-        Ok(())
-    }
-
-    pub fn store_u32(&mut self, addr: u64, data: u32) -> Result<(), RVError> {
-        let virt_addr = addr & PAGE_MASK;
-        if virt_addr < PAGE_MASK - 4 {
-            // fast path
-            // SAFETY: guaranteed to not cross page boundary
-            unsafe {
-                self.data_ptr_mut(addr)?.cast::<u32>().write_unaligned(data);
-            }
-        } else {
-            // slow path
-            self.store_u8(addr + 3, (data >> 24) as u8)?;
-            self.store_u8(addr + 2, (data >> 16) as u8)?;
-            self.store_u8(addr + 1, (data >> 8) as u8)?;
-            self.store_u8(addr + 0, (data) as u8)?;
-        }
-
-        Ok(())
-    }
-
-    pub fn store_u16(&mut self, addr: u64, data: u16) -> Result<(), RVError> {
-        let virt_addr = addr & PAGE_MASK;
-        if virt_addr < PAGE_MASK - 2 {
-            // fast path
-            // SAFETY: guaranteed to not cross page boundary
-            unsafe {
-                self.data_ptr_mut(addr)?.cast::<u16>().write_unaligned(data);
-            }
-        } else {
-            // slow path
-            self.store_u8(addr + 1, (data >> 8) as u8)?;
-            self.store_u8(addr + 0, (data) as u8)?;
-        }
-
-        Ok(())
-    }
-
-    pub fn store_u8(&mut self, idx: u64, data: u8) -> Result<(), RVError> {
-        // SAFETY: guaranteed to not cross page boundary
-        unsafe {
-            self.data_ptr_mut(idx)?.write_unaligned(data);
-        }
-
-        Ok(())
     }
 
     pub fn write_n(&mut self, s: &[u8], addr: u64, len: u64) -> Result<(), RVError> {
+        // TODO: use slice copying method to make this more efficient
+
         for (i, b) in s.iter().take(len as usize).enumerate() {
-            self.store_u8(addr + i as u64, *b)?;
+            self.store::<u8>(addr + i as u64, *b)?;
         }
+
         for i in s.len() as u64..len {
-            self.store_u8(addr + i, 0)?;
+            // println!("store: {:x} going to {:x}", addr + i, addr + len);
+            self.store::<u8>(addr + i, 0)?;
         }
 
         Ok(())
@@ -478,7 +436,7 @@ impl Memory {
         let mut data = Vec::new();
         // read bytes until we get null
         for _ in 0..len {
-            let c = self.load_u8(addr)?;
+            let c = self.load(addr)?;
             addr += 1;
 
             if c == b'\0' {
@@ -517,7 +475,7 @@ impl Memory {
         for _ in 0..length {
             let mut line = String::with_capacity(33);
             for _ in 0..32 {
-                let c = self.load_u8(addr).unwrap_or(0);
+                let c: u8 = self.load(addr).unwrap_or(0);
                 line.push(
                     if c.is_ascii_graphic() || c.is_ascii_alphabetic() || c == b' ' {
                         c

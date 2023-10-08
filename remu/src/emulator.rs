@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use num_traits::FromPrimitive;
 
@@ -64,11 +64,15 @@ pub struct Emulator {
     profile_start_point: Option<u64>,
     profile_end_point: Option<u64>,
     pub profile_cycle_count: u64,
+    pub profile_cache_hit_count: u64,
+    pub profile_cache_miss_count: u64,
+    pub profile_mispredicted_branch_count: u64,
+    pub profile_predicted_branch_count: u64,
 
-    pub cache_hit_count: u64,
-    pub cache_miss_count: u64,
-
-    ignore_dynamic_linker_instructions: bool,
+    // by default, we assume the branch is not taken.
+    // if the address of the branch instruction is inside
+    // this hashmap, we take the branch
+    branch_predictor: HashSet<u64>,
 
     // stores the address of the most recently accessed memory location
     pub last_mem_access: u64,
@@ -76,6 +80,8 @@ pub struct Emulator {
     // Similar to fuel_counter, but also takes into account intruction level parallelism and cache misses.
     // performance_counter: u64,
     pub exit_code: Option<u64>,
+
+    ignore_dynamic_linker_instructions: bool,
 }
 
 impl Emulator {
@@ -96,9 +102,12 @@ impl Emulator {
             profile_start_point: None,
             profile_end_point: None,
             profile_cycle_count: 0,
+            profile_cache_hit_count: 0,
+            profile_cache_miss_count: 0,
+            profile_mispredicted_branch_count: 0,
+            profile_predicted_branch_count: 0,
 
-            cache_hit_count: 0,
-            cache_miss_count: 0,
+            branch_predictor: HashSet::new(),
 
             ignore_dynamic_linker_instructions: true,
 
@@ -607,6 +616,30 @@ impl Emulator {
         }
     }
 
+    fn branch_taken(&mut self) {
+        if self.profile_end_point.is_some() {
+            if self.branch_predictor.insert(self.pc) {
+                // mispredicted branch incurs a 4 cycle penalty
+                self.profile_mispredicted_branch_count += 1;
+                self.cycle_counter += 4;
+            } else {
+                self.profile_predicted_branch_count += 1;
+            }
+        }
+    }
+
+    fn branch_not_taken(&mut self) {
+        if self.profile_end_point.is_some() {
+            if self.branch_predictor.remove(&self.pc) {
+                // mispredicted branch incurs a 4 cycle penalty
+                self.profile_mispredicted_branch_count += 1;
+                self.cycle_counter += 4;
+            } else {
+                self.profile_predicted_branch_count += 1;
+            }
+        }
+    }
+
     fn execute(&mut self, inst: Inst, incr: u64) -> Result<(), RVError> {
         match inst {
             Inst::Fence => {} // noop currently, to do with concurrency I think
@@ -866,28 +899,44 @@ impl Emulator {
                 self.cycle_pipline_stall_xx(rs1, rs2);
 
                 if self.x[rs1] == self.x[rs2] {
+                    self.branch_taken();
+
                     self.pc = self.pc.wrapping_add(offset as u64).wrapping_sub(incr);
+                } else {
+                    self.branch_not_taken();
                 }
             }
             Inst::Bne { rs1, rs2, offset } => {
                 self.cycle_pipline_stall_xx(rs1, rs2);
 
                 if self.x[rs1] != self.x[rs2] {
+                    self.branch_taken();
+
                     self.pc = self.pc.wrapping_add(offset as u64).wrapping_sub(incr);
+                } else {
+                    self.branch_not_taken();
                 }
             }
             Inst::Blt { rs1, rs2, offset } => {
                 self.cycle_pipline_stall_xx(rs1, rs2);
 
                 if (self.x[rs1] as i64) < self.x[rs2] as i64 {
+                    self.branch_taken();
+
                     self.pc = self.pc.wrapping_add(offset as u64).wrapping_sub(incr);
+                } else {
+                    self.branch_not_taken();
                 }
             }
             Inst::Bltu { rs1, rs2, offset } => {
                 self.cycle_pipline_stall_xx(rs1, rs2);
 
                 if self.x[rs1] < self.x[rs2] {
+                    self.branch_taken();
+
                     self.pc = self.pc.wrapping_add(offset as u64).wrapping_sub(incr);
+                } else {
+                    self.branch_not_taken();
                 }
             }
             Inst::Slt { rd, rs1, rs2 } => {
@@ -930,14 +979,22 @@ impl Emulator {
                 self.cycle_pipline_stall_xx(rs1, rs2);
 
                 if (self.x[rs1] as i64) >= self.x[rs2] as i64 {
+                    self.branch_taken();
+
                     self.pc = self.pc.wrapping_add(offset as u64).wrapping_sub(incr);
+                } else {
+                    self.branch_not_taken();
                 }
             }
             Inst::Bgeu { rs1, rs2, offset } => {
                 self.cycle_pipline_stall_xx(rs1, rs2);
 
                 if self.x[rs1] >= self.x[rs2] {
+                    self.branch_taken();
+
                     self.pc = self.pc.wrapping_add(offset as u64).wrapping_sub(incr);
+                } else {
+                    self.branch_not_taken();
                 }
             }
             // TODO: Divide by zero semantics are NOT correct
@@ -1102,30 +1159,34 @@ impl Emulator {
     }
 
     fn add_load_delay_f(&mut self, rd: FReg, addr: u64) {
-        // if cache hit, 3 cycle delay
-        if self.last_mem_access.abs_diff(addr) < CACHE_SIZE {
-            self.cache_hit_count += 1;
-            self.f_pipeline_delay[rd.0 as usize] = self.cycle_counter + 3;
-        }
-        // if cache miss, 200 cycle delay
-        else {
-            self.cache_miss_count += 1;
-            self.f_pipeline_delay[rd.0 as usize] = self.cycle_counter + 200;
+        if self.profile_end_point.is_some() {
+            // if cache hit, 3 cycle delay
+            if self.last_mem_access.abs_diff(addr) < CACHE_SIZE {
+                self.profile_cache_hit_count += 1;
+                self.f_pipeline_delay[rd.0 as usize] = self.cycle_counter + 3;
+            }
+            // if cache miss, 200 cycle delay
+            else {
+                self.profile_cache_miss_count += 1;
+                self.f_pipeline_delay[rd.0 as usize] = self.cycle_counter + 200;
+            }
         }
 
         self.last_mem_access = addr;
     }
 
     fn add_load_delay_x(&mut self, rd: Reg, addr: u64) {
-        // if cache hit, 3 cycle delay
-        if self.last_mem_access.abs_diff(addr) < CACHE_SIZE {
-            self.cache_hit_count += 1;
-            self.x_pipeline_delay[rd] = self.cycle_counter + 3;
-        }
-        // if cache miss, 200 cycle delay
-        else {
-            self.cache_miss_count += 1;
-            self.x_pipeline_delay[rd] = self.cycle_counter + 200;
+        if self.profile_end_point.is_some() {
+            // if cache hit, 3 cycle delay
+            if self.last_mem_access.abs_diff(addr) < CACHE_SIZE {
+                self.profile_cache_hit_count += 1;
+                self.x_pipeline_delay[rd] = self.cycle_counter + 3;
+            }
+            // if cache miss, 200 cycle delay
+            else {
+                self.profile_cache_miss_count += 1;
+                self.x_pipeline_delay[rd] = self.cycle_counter + 200;
+            }
         }
 
         self.last_mem_access = addr;

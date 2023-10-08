@@ -83,7 +83,13 @@ fn main() -> Result<()> {
                 eprintln!("Estimated cycle count: {}", emulator.profile_cycle_count);
                 eprintln!(
                     "Cache hit/miss ratio: {}",
-                    emulator.cache_hit_count as f64 / emulator.cache_miss_count as f64
+                    emulator.profile_cache_hit_count as f64
+                        / emulator.profile_cache_miss_count as f64
+                );
+                eprintln!(
+                    "Branch predict/misspredict ratio: {}",
+                    emulator.profile_predicted_branch_count as f64
+                        / emulator.profile_mispredicted_branch_count as f64
                 );
                 eprintln!(
                     "Estimated time to execute on a (bad) 4GHz processor: {}s",

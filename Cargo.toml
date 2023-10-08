@@ -1,7 +1,6 @@
 [profile.release]
 debug = true
 lto = "thin"
-target-cpu = "native"
 
 [workspace]
 resolver = "2"

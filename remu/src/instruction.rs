@@ -1,5 +1,21 @@
 use crate::register::{FReg, Reg, RA, SP};
 
+const TABLE_SIZE: usize = u16::MAX as usize;
+const fn generate_compressed_instruction_table() -> [Inst; TABLE_SIZE] {
+    let mut table = [Inst::Error(0); TABLE_SIZE];
+    let mut i = 0;
+
+    while i < TABLE_SIZE {
+        table[i] = Inst::decode_compressed(i as u16);
+
+        i += 1;
+    }
+
+    table
+}
+
+const COMPRESSED_INSTRUCTIONS: [Inst; TABLE_SIZE] = generate_compressed_instruction_table();
+
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub enum Inst {
     // MISC.
@@ -198,7 +214,7 @@ impl Inst {
     // returns the instruction along with the number of bytes read
     pub fn decode(inst: u32) -> (Inst, u8) {
         match inst & 0b11 {
-            0b00 | 0b01 | 0b10 => (Self::decode_compressed(inst as u16), 2),
+            0b00 | 0b01 | 0b10 => (COMPRESSED_INSTRUCTIONS[inst as u16 as usize], 2),
             0b11 => (Self::decode_normal(inst), 4),
             _ => unreachable!(),
         }
@@ -509,7 +525,7 @@ impl Inst {
         }
     }
 
-    fn decode_compressed(inst: u16) -> Inst {
+    const fn decode_compressed(inst: u16) -> Inst {
         let quadrant = inst & 0b11;
         let funct3 = (inst >> 13) & 0b111;
 
@@ -661,7 +677,7 @@ impl Inst {
                     0b011 => {
                         let rd = Reg(((inst >> 7) & 0b11111) as u8);
 
-                        if rd == Reg(2) {
+                        if rd.0 == 2 {
                             // C.ADDI16SP
                             let imm = (((inst & 0b1000000000000) << 3) as i16 >> 6) as i32 // imm[9]
                                     | ((inst & 0b100) << 3) as i32 // imm[5]
@@ -836,7 +852,7 @@ impl Inst {
                                 | (inst & 0b1000000000000) >> 7; // imm[5]
 
                         // C.LWSP
-                        if rd != Reg(0) {
+                        if rd.0 != 0 {
                             Inst::Lw {
                                 rd,
                                 rs1: SP,
@@ -854,7 +870,7 @@ impl Inst {
                                 | (inst & 0b11100) << 4 // imm[8:6]
                                 | (inst & 0b1100000) >> 2; // imm[4:3]
 
-                        if rd != Reg(0) {
+                        if rd.0 != 0 {
                             Inst::Ld {
                                 rd,
                                 rs1: SP,
@@ -870,7 +886,7 @@ impl Inst {
                         let rs2 = Reg(((inst >> 2) & 0b11111) as u8);
 
                         // C.JR - ret
-                        if imm == 0 && rs1 != Reg(0) && rs2 == Reg(0) {
+                        if imm == 0 && rs1.0 != 0 && rs2.0 == 0 {
                             Inst::Jalr {
                                 rd: Reg(0),
                                 rs1,
@@ -878,7 +894,7 @@ impl Inst {
                             }
                         }
                         // C.MV - Move
-                        else if imm == 0 && rs1 != Reg(0) && rs2 != Reg(0) {
+                        else if imm == 0 && rs1.0 != 0 && rs2.0 != 0 {
                             Inst::Add {
                                 rd: rs1,
                                 rs1: Reg(0),
@@ -886,11 +902,11 @@ impl Inst {
                             }
                         }
                         // C.ADD - Add
-                        else if imm == 1 && rs1 != Reg(0) && rs2 != Reg(0) {
+                        else if imm == 1 && rs1.0 != 0 && rs2.0 != 0 {
                             Inst::Add { rd: rs1, rs1, rs2 }
                         }
                         // C.JALR
-                        else if imm == 1 && rs1 != Reg(0) && rs2 == Reg(0) {
+                        else if imm == 1 && rs1.0 != 0 && rs2.0 == 0 {
                             Inst::Jalr {
                                 rd: RA,
                                 rs1,

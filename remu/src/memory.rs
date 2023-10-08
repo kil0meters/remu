@@ -382,11 +382,6 @@ impl Memory {
         let heap_addr = Self::heap_addr(addr);
 
         let buffer = &self.buffers[heap_index];
-        // log::debug!(
-        //     "loading {} bytes from {addr:x}, bufsize={:x}",
-        //     mem::size_of::<T>(),
-        //     buffer.len()
-        // );
 
         if heap_index == HeapIndex(255) {
             let stack_end = STACK_START - buffer.len() as u64;

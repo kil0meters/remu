@@ -119,7 +119,8 @@ impl App {
                     .time_travel
                     .current
                     .memory
-                    .hexdump(self.time_travel.current.last_mem_access, 30);
+                    // .hexdump(self.time_travel.current.last_mem_access, 30);
+                    .hexdump(0, 30);
 
                 f.render_widget(
                     Paragraph::new(dump).block(

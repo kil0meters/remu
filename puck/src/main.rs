@@ -20,6 +20,10 @@ struct Arguments {
     #[clap(short, long)]
     disassemble: bool,
 
+    /// The label to profile, default="main"
+    #[clap(short, long)]
+    label: Option<String>,
+
     /// Enables an interactive reverse debugger
     #[clap(short, long)]
     interactive: bool,
@@ -73,7 +77,7 @@ fn main() -> Result<()> {
         let mut app = ui::App::new(emulator)?;
         app.main_loop()
     } else {
-        emulator.profile_label("main")?;
+        emulator.profile_label(&args.label.unwrap_or("main".to_string()))?;
 
         loop {
             if let Some(exit_code) = emulator.fetch_and_execute()? {

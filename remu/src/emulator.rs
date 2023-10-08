@@ -15,7 +15,7 @@ use crate::{
 };
 
 pub const STACK_START: u64 = -1i64 as u64;
-pub const CACHE_SIZE: u64 = 0;
+pub const CACHE_SIZE: u64 = 0x500;
 
 // https://sifive.cdn.prismic.io/sifive/1a82e600-1f93-4f41-b2d8-86ed8b16acba_fu740-c000-manual-v1p6.pdf
 // The latency of DIV, DIVU, REM, and REMU instructions can be determined by calculating:
@@ -58,6 +58,18 @@ pub struct Emulator {
     pub cycle_counter: u64,
     pub max_memory: u64,
 
+    // if set, only count cycles when profile_start_point
+    // then stop when return profile_end_point is reached
+    // (automatically set from RA when profile_start_point is reached)
+    profile_start_point: Option<u64>,
+    profile_end_point: Option<u64>,
+    pub profile_cycle_count: u64,
+
+    pub cache_hit_count: u64,
+    pub cache_miss_count: u64,
+
+    ignore_dynamic_linker_instructions: bool,
+
     // stores the address of the most recently accessed memory location
     pub last_mem_access: u64,
 
@@ -81,6 +93,15 @@ impl Emulator {
             stdout: String::new(),
             stderr: String::new(),
 
+            profile_start_point: None,
+            profile_end_point: None,
+            profile_cycle_count: 0,
+
+            cache_hit_count: 0,
+            cache_miss_count: 0,
+
+            ignore_dynamic_linker_instructions: true,
+
             memory,
             exit_code: None,
             inst_counter: 0,
@@ -97,6 +118,17 @@ impl Emulator {
             .expect("Failed to initialize aux vector");
 
         em
+    }
+
+    pub fn profile_label(&mut self, label: &str) -> Result<(), RVError> {
+        self.profile_start_point = Some(
+            self.memory
+                .disassembler
+                .get_symbol_addr(label)
+                .ok_or(RVError::InvalidLabel)?,
+        );
+
+        Ok(())
     }
 
     pub fn set_stdin(&mut self, data: &'static [u8]) {
@@ -505,6 +537,18 @@ impl Emulator {
 
         let (inst, incr) = self.fetch()?;
 
+        // if we reach the end
+        if Some(self.pc) == self.profile_start_point {
+            self.profile_end_point = Some(self.x[RA]);
+            self.profile_cycle_count = self.cycle_counter;
+        }
+        // save final_cycle_count
+        else if Some(self.pc) == self.profile_end_point {
+            self.profile_start_point = None;
+            self.profile_end_point = None;
+            self.profile_cycle_count = self.cycle_counter - self.profile_cycle_count;
+        }
+
         // log::debug!("{:16x} {}", self.pc, inst.fmt(self.pc));
 
         self.execute(inst, incr as u64)?;
@@ -540,21 +584,27 @@ impl Emulator {
 
     #[inline]
     fn cycle_pipline_stall_xx(&mut self, reg1: Reg, reg2: Reg) {
-        self.cycle_counter = self.cycle_counter.max(self.x_pipeline_delay[reg1]);
-        self.cycle_counter = self.cycle_counter.max(self.x_pipeline_delay[reg2]);
+        if !(self.ignore_dynamic_linker_instructions && self.pc >> 56 == 2) {
+            self.cycle_counter = self.cycle_counter.max(self.x_pipeline_delay[reg1]);
+            self.cycle_counter = self.cycle_counter.max(self.x_pipeline_delay[reg2]);
+        }
     }
 
     #[inline]
     fn cycle_pipline_stall_xf(&mut self, reg1: Reg, reg2: FReg) {
-        self.cycle_counter = self.cycle_counter.max(self.x_pipeline_delay[reg1]);
-        self.cycle_counter = self
-            .cycle_counter
-            .max(self.f_pipeline_delay[reg2.0 as usize]);
+        if !(self.ignore_dynamic_linker_instructions && self.pc >> 56 == 2) {
+            self.cycle_counter = self.cycle_counter.max(self.x_pipeline_delay[reg1]);
+            self.cycle_counter = self
+                .cycle_counter
+                .max(self.f_pipeline_delay[reg2.0 as usize]);
+        }
     }
 
     #[inline]
     fn cycle_pipline_stall_x(&mut self, reg1: Reg) {
-        self.cycle_counter = self.cycle_counter.max(self.x_pipeline_delay[reg1]);
+        if !(self.ignore_dynamic_linker_instructions && self.pc >> 56 == 2) {
+            self.cycle_counter = self.cycle_counter.max(self.x_pipeline_delay[reg1]);
+        }
     }
 
     fn execute(&mut self, inst: Inst, incr: u64) -> Result<(), RVError> {
@@ -1040,8 +1090,10 @@ impl Emulator {
         self.pc = self.pc.wrapping_add(incr);
 
         // every instruction takes at least 1 cycle
-        self.inst_counter += 1;
-        self.cycle_counter += 1;
+        if !(self.ignore_dynamic_linker_instructions && self.pc >> 56 == 2) {
+            self.inst_counter += 1;
+            self.cycle_counter += 1;
+        }
 
         // make sure x0 is zero
         self.x[0] = 0;
@@ -1052,10 +1104,12 @@ impl Emulator {
     fn add_load_delay_f(&mut self, rd: FReg, addr: u64) {
         // if cache hit, 3 cycle delay
         if self.last_mem_access.abs_diff(addr) < CACHE_SIZE {
+            self.cache_hit_count += 1;
             self.f_pipeline_delay[rd.0 as usize] = self.cycle_counter + 3;
         }
         // if cache miss, 200 cycle delay
         else {
+            self.cache_miss_count += 1;
             self.f_pipeline_delay[rd.0 as usize] = self.cycle_counter + 200;
         }
 
@@ -1065,10 +1119,12 @@ impl Emulator {
     fn add_load_delay_x(&mut self, rd: Reg, addr: u64) {
         // if cache hit, 3 cycle delay
         if self.last_mem_access.abs_diff(addr) < CACHE_SIZE {
+            self.cache_hit_count += 1;
             self.x_pipeline_delay[rd] = self.cycle_counter + 3;
         }
         // if cache miss, 200 cycle delay
         else {
+            self.cache_miss_count += 1;
             self.x_pipeline_delay[rd] = self.cycle_counter + 200;
         }
 

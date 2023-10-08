@@ -58,7 +58,7 @@ fn main() -> Result<()> {
         return Ok(());
     }
 
-    let memory = Memory::load_elf(file, args.interactive);
+    let memory = Memory::load_elf(file);
     let mut emulator = Emulator::new(memory);
 
     if let Some(stdin_file) = args.stdin {
@@ -73,18 +73,22 @@ fn main() -> Result<()> {
         let mut app = ui::App::new(emulator)?;
         app.main_loop()
     } else {
+        emulator.profile_label("main")?;
+
         loop {
             if let Some(exit_code) = emulator.fetch_and_execute()? {
                 print!("{}", emulator.stdout);
                 eprintln!("------------------------------");
                 eprintln!("Program exited with code {exit_code}");
-                eprintln!("Instructions executed: {}", emulator.inst_counter);
-                eprintln!("Estimated cycle count: {}", emulator.cycle_counter);
+                eprintln!("Estimated cycle count: {}", emulator.profile_cycle_count);
+                eprintln!(
+                    "Cache hit/miss ratio: {}",
+                    emulator.cache_hit_count as f64 / emulator.cache_miss_count as f64
+                );
                 eprintln!(
                     "Estimated time to execute on a (bad) 4GHz processor: {}s",
-                    emulator.cycle_counter as f64 / 4_000_000_000.0
+                    emulator.profile_cycle_count as f64 / 4_000_000_000.0
                 );
-                eprintln!("Peak memory usage: {} bytes", emulator.max_memory);
                 break;
             }
         }

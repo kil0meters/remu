@@ -136,6 +136,10 @@ impl Disassembler {
             .ok()
     }
 
+    pub fn get_symbol_addr(&self, symbol: &str) -> Option<u64> {
+        self.symbols.iter().find(|x| x.1 == symbol).map(|x| x.0)
+    }
+
     fn disassemble_inst(&self, inst: Inst, pc: u64) -> String {
         let mut writer = String::new();
 

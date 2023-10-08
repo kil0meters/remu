@@ -52,13 +52,7 @@ impl App {
     }
 
     fn render_ui(&mut self) -> Result<()> {
-        let disassembler = self
-            .time_travel
-            .current
-            .memory
-            .disassembler
-            .as_ref()
-            .unwrap();
+        let disassembler = &self.time_travel.current.memory.disassembler;
 
         let disassembly = disassembler.disassemble_pc_relative(
             &self.time_travel.current.memory,
@@ -292,8 +286,6 @@ impl App {
                             .current
                             .memory
                             .disassembler
-                            .as_ref()
-                            .unwrap()
                             .get_symbol_at_addr(self.time_travel.current.pc)
                         {
                             if &symbol_at_addr == search_symbol {

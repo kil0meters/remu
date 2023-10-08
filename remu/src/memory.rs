@@ -69,28 +69,26 @@ pub struct Memory {
 
     pub program_header: ProgramHeaderInfo,
 
-    pub disassembler: Option<Disassembler>,
+    pub disassembler: Disassembler,
 
     // the number of times mmap has been called
     pub mmap_count: u64,
 }
 
 impl Memory {
-    pub fn load_elf<T: EndianParse>(elf: ElfBytes<T>, disassemble: bool) -> Self {
+    pub fn load_elf<T: EndianParse>(elf: ElfBytes<T>) -> Self {
         let mut memory = Memory {
             buffers: vec![vec![]; 256].try_into().expect("static"),
             entry: 0,
             program_header: ProgramHeaderInfo::default(),
             mmap_count: 3,
-            disassembler: disassemble.then(Disassembler::new),
+            disassembler: Disassembler::new(),
         };
 
         // add an initial page to the stack
         memory.buffers[255].resize(0x1000, 0);
 
-        if let Some(dias) = memory.disassembler.as_mut() {
-            dias.add_elf_symbols(&elf, 0);
-        }
+        memory.disassembler.add_elf_symbols(&elf, 0);
 
         // load dynamic libraries, if they exist
         // https://blog.k3170makan.com/2018/11/introduction-to-elf-format-part-vii.html
@@ -112,9 +110,7 @@ impl Memory {
                 memory.map_segments(ld_offset, &ld_elf);
                 memory.map_segments(0x0, &elf);
 
-                if let Some(dias) = memory.disassembler.as_mut() {
-                    dias.add_elf_symbols(&ld_elf, ld_offset);
-                }
+                memory.disassembler.add_elf_symbols(&ld_elf, ld_offset);
 
                 memory.entry = ld_offset + ld_elf.ehdr.e_entry;
             }
@@ -174,7 +170,7 @@ impl Memory {
         let mut memory = Memory {
             entry: 0,
             mmap_count: 0,
-            disassembler: None,
+            disassembler: Disassembler::new(),
             program_header: Default::default(),
             buffers: vec![vec![]; 256].try_into().expect("static"),
         };

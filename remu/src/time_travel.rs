@@ -1,7 +1,6 @@
-use crate::{
-    emulator::{Emulator, InstCache},
-    memory::MemMap,
-};
+use std::collections::HashMap;
+
+use crate::emulator::Emulator;
 
 // number of instructions
 const B_STATE_INTERVAL: u64 = 10000;
@@ -9,20 +8,18 @@ const B_STATE_LIMIT: usize = 250;
 
 pub struct TimeTravel {
     pub current: Emulator,
-    history: MemMap<u64, Emulator>,
-    inst_cache: Option<InstCache>,
+    history: HashMap<u64, Emulator>,
     smallest_b_state: u64,
 }
 
 impl TimeTravel {
     pub fn new(emulator: Emulator) -> TimeTravel {
-        let mut history = MemMap::default();
+        let mut history = HashMap::default();
         history.insert(0, emulator.clone());
 
         TimeTravel {
             current: emulator.clone(),
             history,
-            inst_cache: None,
             smallest_b_state: 0,
         }
     }
@@ -30,7 +27,7 @@ impl TimeTravel {
     pub fn step(&mut self, amount: i32) -> Option<u64> {
         if amount >= 0 {
             for _ in 0..amount {
-                match self.current.fetch_and_execute(self.inst_cache.as_mut()) {
+                match self.current.fetch_and_execute() {
                     Ok(Some(exit_code)) => return Some(exit_code),
                     Ok(None) => {}
                     Err(e) => {
@@ -70,7 +67,7 @@ impl TimeTravel {
 
                     for _ in 0..r {
                         // guaranteed to not return
-                        match self.current.fetch_and_execute(self.inst_cache.as_mut()) {
+                        match self.current.fetch_and_execute() {
                             Ok(Some(exit_code)) => return Some(exit_code),
                             Ok(None) => {}
                             Err(e) => {

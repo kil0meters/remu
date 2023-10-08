@@ -4,21 +4,13 @@ use elf::{endian::AnyEndian, ElfBytes};
 use log::LevelFilter;
 use simplelog::{ConfigBuilder, SimpleLogger};
 
-use remu::{
-    disassembler::Disassembler,
-    emulator::{Emulator, InstCache},
-    memory::Memory,
-};
+use remu::{disassembler::Disassembler, emulator::Emulator, memory::Memory};
 
 mod ui;
 
 #[derive(Parser)]
 struct Arguments {
     file: String,
-
-    /// Enables an instruction cache which improves performance
-    #[clap(short, long)]
-    cache: bool,
 
     /// Path for a file to be treated as standard input
     #[clap(long)]
@@ -81,10 +73,8 @@ fn main() -> Result<()> {
         let mut app = ui::App::new(emulator)?;
         app.main_loop()
     } else {
-        let mut inst_cache = args.cache.then(InstCache::default);
-
         loop {
-            if let Some(exit_code) = emulator.fetch_and_execute(inst_cache.as_mut())? {
+            if let Some(exit_code) = emulator.fetch_and_execute()? {
                 print!("{}", emulator.stdout);
                 eprintln!("------------------------------");
                 eprintln!("Program exited with code {exit_code}");

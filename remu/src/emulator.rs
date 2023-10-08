@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use num_traits::FromPrimitive;
 
 use crate::{
@@ -5,8 +7,8 @@ use crate::{
     error::RVError,
     instruction::Inst,
     memory::{
-        MemMap, Memory, LIBCPP_DATA, LIBCPP_FILE_DESCRIPTOR, LIBC_DATA, LIBC_FILE_DESCRIPTOR,
-        LIBGCCS_DATA, LIBGCCS_FILE_DESCRIPTOR, LIBM_DATA, LIBM_FILE_DESCRIPTOR, PAGE_SIZE,
+        Memory, LIBCPP_DATA, LIBCPP_FILE_DESCRIPTOR, LIBC_DATA, LIBC_FILE_DESCRIPTOR, LIBGCCS_DATA,
+        LIBGCCS_FILE_DESCRIPTOR, LIBM_DATA, LIBM_FILE_DESCRIPTOR, PAGE_SIZE,
     },
     register::*,
     syscalls::Syscall,
@@ -14,8 +16,6 @@ use crate::{
 
 pub const STACK_START: u64 = -1i64 as u64;
 pub const CACHE_SIZE: u64 = 0;
-
-pub type InstCache = MemMap<u64, (Inst, u8)>;
 
 // https://sifive.cdn.prismic.io/sifive/1a82e600-1f93-4f41-b2d8-86ed8b16acba_fu740-c000-manual-v1p6.pdf
 // The latency of DIV, DIVU, REM, and REMU instructions can be determined by calculating:
@@ -48,7 +48,7 @@ pub struct Emulator {
     f_pipeline_delay: [u64; 32],
 
     pub memory: Memory,
-    file_descriptors: MemMap<i64, FileDescriptor>,
+    file_descriptors: HashMap<i64, FileDescriptor>,
 
     pub stdout: String,
     pub stderr: String,
@@ -77,7 +77,7 @@ impl Emulator {
             x_pipeline_delay: [0; 32],
             f_pipeline_delay: [0; 32],
 
-            file_descriptors: MemMap::default(),
+            file_descriptors: HashMap::default(),
             stdout: String::new(),
             stderr: String::new(),
 
@@ -493,33 +493,17 @@ impl Emulator {
         Ok(())
     }
 
-    fn fetch(&self, inst_cache: Option<&mut InstCache>) -> Result<(Inst, u8), RVError> {
-        let inst = if let Some(inst_cache) = inst_cache {
-            if let Some(inst) = inst_cache.get(&self.pc) {
-                *inst
-            } else {
-                let inst_data = self.memory.load::<u32>(self.pc)?;
-                let inst = Inst::decode(inst_data);
-                inst_cache.insert(self.pc, inst);
-                inst
-            }
-        } else {
-            let inst_data = self.memory.load::<u32>(self.pc)?;
-            Inst::decode(inst_data)
-        };
-
-        Ok(inst)
+    fn fetch(&self) -> Result<(Inst, u8), RVError> {
+        let inst_data = self.memory.load::<u32>(self.pc)?;
+        Ok(Inst::decode(inst_data))
     }
 
-    pub fn fetch_and_execute(
-        &mut self,
-        inst_cache: Option<&mut InstCache>,
-    ) -> Result<Option<u64>, RVError> {
+    pub fn fetch_and_execute(&mut self) -> Result<Option<u64>, RVError> {
         if self.exit_code.is_some() {
             return Ok(self.exit_code);
         }
 
-        let (inst, incr) = self.fetch(inst_cache)?;
+        let (inst, incr) = self.fetch()?;
 
         // log::debug!("{:16x} {}", self.pc, inst.fmt(self.pc));
 

@@ -1,9 +1,8 @@
+use std::collections::HashMap;
+
 use elf::{endian::EndianParse, ElfBytes};
 
-use crate::{
-    instruction::Inst,
-    memory::{MemMap, Memory},
-};
+use crate::{instruction::Inst, memory::Memory};
 
 const STT_FUNC: u8 = 2;
 
@@ -55,7 +54,7 @@ impl Disassembler {
         dias.add_elf_symbols(elf, 0);
 
         let mut text_regions = Vec::new();
-        let mut instructions = MemMap::default();
+        let mut instructions = HashMap::new();
 
         for section_name in [".text", ".plt"] {
             // add instructions

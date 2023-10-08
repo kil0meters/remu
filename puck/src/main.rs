@@ -88,7 +88,12 @@ fn main() -> Result<()> {
                 print!("{}", emulator.stdout);
                 eprintln!("------------------------------");
                 eprintln!("Program exited with code {exit_code}");
-                eprintln!("Fuel consumed: {}", emulator.inst_counter);
+                eprintln!("Instructions executed: {}", emulator.inst_counter);
+                eprintln!("Estimated cycle count: {}", emulator.cycle_counter);
+                eprintln!(
+                    "Estimated time to execute on a (bad) 4GHz processor: {}s",
+                    emulator.cycle_counter as f64 / 4_000_000_000.0
+                );
                 eprintln!("Peak memory usage: {} bytes", emulator.max_memory);
                 break;
             }

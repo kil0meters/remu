@@ -11,6 +11,19 @@ pub struct Reg(pub u8);
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct FReg(pub u8);
 
+impl Index<Reg> for [u8] {
+    type Output = u8;
+    fn index(&self, index: Reg) -> &Self::Output {
+        &self[index.0 as usize]
+    }
+}
+
+impl IndexMut<Reg> for [u8] {
+    fn index_mut(&mut self, index: Reg) -> &mut Self::Output {
+        &mut self[index.0 as usize]
+    }
+}
+
 impl Index<Reg> for [u64] {
     type Output = u64;
     fn index(&self, index: Reg) -> &Self::Output {

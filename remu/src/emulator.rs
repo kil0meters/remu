@@ -13,8 +13,22 @@ use crate::{
 };
 
 pub const STACK_START: u64 = -1i64 as u64;
+pub const CACHE_SIZE: u64 = 0;
 
 pub type InstCache = MemMap<u64, (Inst, u8)>;
+
+// https://sifive.cdn.prismic.io/sifive/1a82e600-1f93-4f41-b2d8-86ed8b16acba_fu740-c000-manual-v1p6.pdf
+// The latency of DIV, DIVU, REM, and REMU instructions can be determined by calculating:
+// Latency = 2 cycles + log2(dividend) - log2(divisor) + 1 cycle
+// if the input is negative + 1 cycle if the output is negative
+macro_rules! div_cycle_count {
+    ($dividend:expr, $divisor:expr) => {
+        (2 + ($dividend)
+            .max(1)
+            .ilog2()
+            .saturating_sub(($divisor).max(1).ilog2())) as u64
+    };
+}
 
 #[derive(Clone)]
 pub struct FileDescriptor {
@@ -30,6 +44,9 @@ pub struct Emulator {
     x: [u64; 32],
     f: [f64; 32],
 
+    x_pipeline_delay: [u64; 32],
+    f_pipeline_delay: [u64; 32],
+
     pub memory: Memory,
     file_descriptors: MemMap<i64, FileDescriptor>,
 
@@ -38,6 +55,7 @@ pub struct Emulator {
 
     /// The number of instructions executed over the lifecycle of the emulator.
     pub inst_counter: u64,
+    pub cycle_counter: u64,
     pub max_memory: u64,
 
     // stores the address of the most recently accessed memory location
@@ -56,6 +74,9 @@ impl Emulator {
             x: [0; 32],
             f: [0.0; 32],
 
+            x_pipeline_delay: [0; 32],
+            f_pipeline_delay: [0; 32],
+
             file_descriptors: MemMap::default(),
             stdout: String::new(),
             stderr: String::new(),
@@ -63,6 +84,7 @@ impl Emulator {
             memory,
             exit_code: None,
             inst_counter: 0,
+            cycle_counter: 0,
             max_memory: 0,
             last_mem_access: 0,
             // performance_counter: 0,
@@ -504,7 +526,6 @@ impl Emulator {
         self.execute(inst, incr as u64)?;
 
         self.max_memory = self.max_memory.max(self.memory.usage());
-        self.inst_counter += 1;
 
         Ok(self.exit_code)
     }
@@ -533,11 +554,32 @@ impl Emulator {
         output
     }
 
+    #[inline]
+    fn cycle_pipline_stall_xx(&mut self, reg1: Reg, reg2: Reg) {
+        self.cycle_counter = self.cycle_counter.max(self.x_pipeline_delay[reg1]);
+        self.cycle_counter = self.cycle_counter.max(self.x_pipeline_delay[reg2]);
+    }
+
+    #[inline]
+    fn cycle_pipline_stall_xf(&mut self, reg1: Reg, reg2: FReg) {
+        self.cycle_counter = self.cycle_counter.max(self.x_pipeline_delay[reg1]);
+        self.cycle_counter = self
+            .cycle_counter
+            .max(self.f_pipeline_delay[reg2.0 as usize]);
+    }
+
+    #[inline]
+    fn cycle_pipline_stall_x(&mut self, reg1: Reg) {
+        self.cycle_counter = self.cycle_counter.max(self.x_pipeline_delay[reg1]);
+    }
+
     fn execute(&mut self, inst: Inst, incr: u64) -> Result<(), RVError> {
         match inst {
             Inst::Fence => {} // noop currently, to do with concurrency I think
             Inst::Ebreak => {}
             Inst::Ecall => {
+                self.cycle_pipline_stall_x(A7);
+
                 let id = self.x[A7];
                 self.syscall(id)?;
             }
@@ -548,141 +590,229 @@ impl Emulator {
                 self.x[rd] = imm as u64;
             }
             Inst::Ld { rd, rs1, offset } => {
+                self.cycle_pipline_stall_x(rs1);
+
                 let addr = self.x[rs1].wrapping_add(offset as u64);
-                log::debug!("ld addr = {addr:x}");
-                self.last_mem_access = addr;
+                self.add_load_delay_x(rd, addr);
+
                 self.x[rd] = self.memory.load(addr)?;
             }
             Inst::Fld { rd, rs1, offset } => {
+                self.cycle_pipline_stall_x(rs1);
+
                 let addr = self.x[rs1].wrapping_add(offset as u64);
-                self.last_mem_access = addr;
+                self.add_load_delay_f(rd, addr);
+
                 self.f[rd] = f64::from_bits(self.memory.load(addr)?);
             }
             Inst::Flw { rd, rs1, offset } => {
+                self.cycle_pipline_stall_x(rs1);
+
                 let addr = self.x[rs1].wrapping_add(offset as u64);
-                self.last_mem_access = addr;
+                self.add_load_delay_f(rd, addr);
+
                 self.f[rd] = f32::from_bits(self.memory.load(addr)?) as f64;
             }
             Inst::Lw { rd, rs1, offset } => {
+                self.cycle_pipline_stall_x(rs1);
+
                 let addr = self.x[rs1].wrapping_add(offset as u64);
-                self.last_mem_access = addr;
+                self.add_load_delay_x(rd, addr);
+
                 self.x[rd] = self.memory.load::<i32>(addr)? as u64;
             }
             Inst::Lwu { rd, rs1, offset } => {
+                self.cycle_pipline_stall_x(rs1);
+
                 let addr = self.x[rs1].wrapping_add(offset as u64);
-                self.last_mem_access = addr;
+                self.add_load_delay_x(rd, addr);
+
                 self.x[rd] = self.memory.load::<u32>(addr)? as u64;
             }
             Inst::Lhu { rd, rs1, offset } => {
+                self.cycle_pipline_stall_x(rs1);
+
                 let addr = self.x[rs1].wrapping_add(offset as u64);
-                self.last_mem_access = addr;
+                self.add_load_delay_x(rd, addr);
+
                 self.x[rd] = self.memory.load::<u16>(addr)? as u64;
             }
             Inst::Lb { rd, rs1, offset } => {
+                self.cycle_pipline_stall_x(rs1);
+
                 let addr = self.x[rs1].wrapping_add(offset as u64);
-                self.last_mem_access = addr;
+                self.add_load_delay_x(rd, addr);
+
                 self.x[rd] = self.memory.load::<i8>(addr)? as u64;
             }
             Inst::Lbu { rd, rs1, offset } => {
+                self.cycle_pipline_stall_x(rs1);
+
                 let addr = self.x[rs1].wrapping_add(offset as u64);
-                log::debug!("lbu addr = {addr:x}");
-                self.last_mem_access = addr;
+                self.add_load_delay_x(rd, addr);
+
                 self.x[rd] = self.memory.load::<u8>(addr)? as u64;
             }
             Inst::Sd { rs1, rs2, offset } => {
+                self.cycle_pipline_stall_xx(rs1, rs2);
+
                 let addr = self.x[rs1].wrapping_add(offset as u64);
                 self.last_mem_access = addr;
                 self.memory.store(addr, self.x[rs2])?;
             }
             Inst::Fsd { rs1, rs2, offset } => {
+                self.cycle_pipline_stall_xf(rs1, rs2);
+
                 let addr = self.x[rs1].wrapping_add(offset as u64);
                 self.last_mem_access = addr;
                 self.memory.store(addr, self.f[rs2].to_bits())?;
             }
             Inst::Fsw { rs1, rs2, offset } => {
+                self.cycle_pipline_stall_xf(rs1, rs2);
+
                 let addr = self.x[rs1].wrapping_add(offset as u64);
                 self.last_mem_access = addr;
                 self.memory.store(addr, (self.f[rs2] as f32).to_bits())?;
             }
             Inst::Sw { rs1, rs2, offset } => {
+                self.cycle_pipline_stall_xx(rs1, rs2);
+
                 let addr = self.x[rs1].wrapping_add(offset as u64);
                 self.last_mem_access = addr;
                 self.memory.store(addr, self.x[rs2] as u32)?;
             }
             Inst::Sh { rs1, rs2, offset } => {
+                self.cycle_pipline_stall_xx(rs1, rs2);
+
                 let addr = self.x[rs1].wrapping_add(offset as u64);
                 self.last_mem_access = addr;
                 self.memory.store(addr, self.x[rs2] as u16)?;
             }
             Inst::Sb { rs1, rs2, offset } => {
+                self.cycle_pipline_stall_xx(rs1, rs2);
+
                 let addr = self.x[rs1].wrapping_add(offset as u64);
                 self.last_mem_access = addr;
                 self.memory.store(addr, self.x[rs2] as u8)?;
             }
-            Inst::Add { rd, rs1, rs2 } => self.x[rd] = self.x[rs1].wrapping_add(self.x[rs2]),
+            Inst::Add { rd, rs1, rs2 } => {
+                self.cycle_pipline_stall_xx(rs1, rs2);
+
+                self.x[rd] = self.x[rs1].wrapping_add(self.x[rs2]);
+            }
             Inst::Addw { rd, rs1, rs2 } => {
+                self.cycle_pipline_stall_xx(rs1, rs2);
+
                 self.x[rd] = (self.x[rs1] as i32).wrapping_add(self.x[rs2] as i32) as u64;
             }
-            Inst::Addi { rd, rs1, imm } => self.x[rd] = self.x[rs1].wrapping_add(imm as u64),
+            Inst::Addi { rd, rs1, imm } => {
+                self.cycle_pipline_stall_x(rs1);
+
+                self.x[rd] = self.x[rs1].wrapping_add(imm as u64);
+            }
             Inst::Addiw { rd, rs1, imm } => {
+                self.cycle_pipline_stall_x(rs1);
+
                 self.x[rd] = (self.x[rs1] as i32).wrapping_add(imm as i32) as u64;
             }
             Inst::And { rd, rs1, rs2 } => {
+                self.cycle_pipline_stall_xx(rs1, rs2);
+
                 self.x[rd] = self.x[rs1] & self.x[rs2];
             }
             Inst::Andi { rd, rs1, imm } => {
+                self.cycle_pipline_stall_x(rs1);
+
                 self.x[rd] = self.x[rs1] & (imm as u64);
             }
-            Inst::Sub { rd, rs1, rs2 } => self.x[rd] = self.x[rs1].wrapping_sub(self.x[rs2]),
+            Inst::Sub { rd, rs1, rs2 } => {
+                self.cycle_pipline_stall_xx(rs1, rs2);
+
+                self.x[rd] = self.x[rs1].wrapping_sub(self.x[rs2]);
+            }
             Inst::Subw { rd, rs1, rs2 } => {
+                self.cycle_pipline_stall_xx(rs1, rs2);
+
                 self.x[rd] = (self.x[rs1] as i32).wrapping_sub(self.x[rs2] as i32) as u64;
             }
             Inst::Sll { rd, rs1, rs2 } => {
+                self.cycle_pipline_stall_xx(rs1, rs2);
+
                 self.x[rd] = self.x[rs1] << self.x[rs2];
             }
             Inst::Sllw { rd, rs1, rs2 } => {
+                self.cycle_pipline_stall_xx(rs1, rs2);
+
                 self.x[rd] = ((self.x[rs1] as u32).wrapping_shl(self.x[rs2] as u32)) as i32 as u64;
             }
             Inst::Slli { rd, rs1, shamt } => {
+                self.cycle_pipline_stall_x(rs1);
+
                 self.x[rd] = self.x[rs1] << shamt;
             }
             Inst::Slliw { rd, rs1, shamt } => {
+                self.cycle_pipline_stall_x(rs1);
+
                 self.x[rd] = ((self.x[rs1] as u32).wrapping_shl(shamt)) as u64;
             }
             Inst::Srl { rd, rs1, rs2 } => {
+                self.cycle_pipline_stall_xx(rs1, rs2);
+
                 self.x[rd] = self.x[rs1].wrapping_shr(self.x[rs2] as u32);
             }
             Inst::Srlw { rd, rs1, rs2 } => {
+                self.cycle_pipline_stall_xx(rs1, rs2);
+
                 self.x[rd] = ((self.x[rs1] as u32).wrapping_shr(self.x[rs2] as u32)) as i32 as u64;
             }
             Inst::Srli { rd, rs1, shamt } => {
+                self.cycle_pipline_stall_x(rs1);
+
                 self.x[rd] = self.x[rs1] >> shamt;
             }
             Inst::Srliw { rd, rs1, shamt } => {
+                self.cycle_pipline_stall_x(rs1);
+
                 self.x[rd] = ((self.x[rs1] as u32).wrapping_shr(shamt)) as u64;
             }
             Inst::Sra { rd, rs1, rs2 } => {
+                self.cycle_pipline_stall_xx(rs1, rs2);
+
                 self.x[rd] = ((self.x[rs1] as i64).wrapping_shr(self.x[rs2] as u32)) as u64;
             }
             Inst::Sraw { rd, rs1, rs2 } => {
+                self.cycle_pipline_stall_xx(rs1, rs2);
+
                 self.x[rd] = ((self.x[rs1] as i32).wrapping_shr(self.x[rs2] as u32)) as u64;
             }
             Inst::Srai { rd, rs1, shamt } => {
+                self.cycle_pipline_stall_x(rs1);
+
                 self.x[rd] = ((self.x[rs1] as i64) >> shamt) as u64;
             }
             Inst::Sraiw { rd, rs1, shamt } => {
+                self.cycle_pipline_stall_x(rs1);
+
                 self.x[rd] = ((self.x[rs1] as i32) >> shamt) as u64;
             }
             Inst::Or { rd, rs1, rs2 } => {
+                self.cycle_pipline_stall_xx(rs1, rs2);
+
                 self.x[rd] = self.x[rs1] | self.x[rs2];
             }
             Inst::Ori { rd, rs1, imm } => {
+                self.cycle_pipline_stall_x(rs1);
+
                 self.x[rd] = self.x[rs1] | imm as u64;
             }
             Inst::Xor { rd, rs1, rs2 } => {
+                self.cycle_pipline_stall_xx(rs1, rs2);
+
                 self.x[rd] = self.x[rs1] ^ self.x[rs2];
             }
             Inst::Xori { rd, rs1, imm } => {
+                self.cycle_pipline_stall_x(rs1);
+
                 self.x[rd] = self.x[rs1] ^ imm as u64;
             }
             Inst::Auipc { rd, imm } => {
@@ -693,30 +823,42 @@ impl Emulator {
                 self.pc = self.pc.wrapping_add(offset as u64).wrapping_sub(incr);
             }
             Inst::Jalr { rd, rs1, offset } => {
+                self.cycle_pipline_stall_x(rs1);
+
                 self.x[rd] = self.pc + incr as u64;
                 self.pc = self.x[rs1].wrapping_add(offset as u64).wrapping_sub(incr);
             }
             Inst::Beq { rs1, rs2, offset } => {
+                self.cycle_pipline_stall_xx(rs1, rs2);
+
                 if self.x[rs1] == self.x[rs2] {
                     self.pc = self.pc.wrapping_add(offset as u64).wrapping_sub(incr);
                 }
             }
             Inst::Bne { rs1, rs2, offset } => {
+                self.cycle_pipline_stall_xx(rs1, rs2);
+
                 if self.x[rs1] != self.x[rs2] {
                     self.pc = self.pc.wrapping_add(offset as u64).wrapping_sub(incr);
                 }
             }
             Inst::Blt { rs1, rs2, offset } => {
+                self.cycle_pipline_stall_xx(rs1, rs2);
+
                 if (self.x[rs1] as i64) < self.x[rs2] as i64 {
                     self.pc = self.pc.wrapping_add(offset as u64).wrapping_sub(incr);
                 }
             }
             Inst::Bltu { rs1, rs2, offset } => {
+                self.cycle_pipline_stall_xx(rs1, rs2);
+
                 if self.x[rs1] < self.x[rs2] {
                     self.pc = self.pc.wrapping_add(offset as u64).wrapping_sub(incr);
                 }
             }
             Inst::Slt { rd, rs1, rs2 } => {
+                self.cycle_pipline_stall_xx(rs1, rs2);
+
                 if (self.x[rs1] as i64) < (self.x[rs2] as i64) {
                     self.x[rd] = 1;
                 } else {
@@ -724,6 +866,8 @@ impl Emulator {
                 }
             }
             Inst::Sltu { rd, rs1, rs2 } => {
+                self.cycle_pipline_stall_xx(rs1, rs2);
+
                 if self.x[rs1] < self.x[rs2] {
                     self.x[rd] = 1;
                 } else {
@@ -731,6 +875,8 @@ impl Emulator {
                 }
             }
             Inst::Slti { rd, rs1, imm } => {
+                self.cycle_pipline_stall_x(rs1);
+
                 if (self.x[rs1] as i64) < (imm as i64) {
                     self.x[rd] = 1;
                 } else {
@@ -738,6 +884,8 @@ impl Emulator {
                 }
             }
             Inst::Sltiu { rd, rs1, imm } => {
+                self.cycle_pipline_stall_x(rs1);
+
                 if self.x[rs1] < imm as u64 {
                     self.x[rd] = 1;
                 } else {
@@ -745,35 +893,67 @@ impl Emulator {
                 }
             }
             Inst::Bge { rs1, rs2, offset } => {
+                self.cycle_pipline_stall_xx(rs1, rs2);
+
                 if (self.x[rs1] as i64) >= self.x[rs2] as i64 {
                     self.pc = self.pc.wrapping_add(offset as u64).wrapping_sub(incr);
                 }
             }
             Inst::Bgeu { rs1, rs2, offset } => {
+                self.cycle_pipline_stall_xx(rs1, rs2);
+
                 if self.x[rs1] >= self.x[rs2] {
                     self.pc = self.pc.wrapping_add(offset as u64).wrapping_sub(incr);
                 }
             }
             // TODO: Divide by zero semantics are NOT correct
             Inst::Div { rd, rs1, rs2 } => {
+                self.cycle_pipline_stall_xx(rs1, rs2);
+
+                self.x_pipeline_delay[rd] = self.cycle_counter
+                    + div_cycle_count!((self.x[rs1] as i64).abs(), (self.x[rs2] as i64).abs());
                 self.x[rd] = ((self.x[rs1] as i64) / (self.x[rs2] as i64)) as u64;
             }
             Inst::Divw { rd, rs1, rs2 } => {
+                self.cycle_pipline_stall_xx(rs1, rs2);
+
+                self.x_pipeline_delay[rd] = self.cycle_counter
+                    + div_cycle_count!((self.x[rs1] as i32).abs(), (self.x[rs2] as i32).abs());
                 self.x[rd] = ((self.x[rs1] as i32) / (self.x[rs2] as i32)) as u64;
             }
             Inst::Divu { rd, rs1, rs2 } => {
+                self.cycle_pipline_stall_xx(rs1, rs2);
+
+                self.x_pipeline_delay[rd] =
+                    self.cycle_counter + div_cycle_count!(self.x[rs1], self.x[rs2]);
                 self.x[rd] = self.x[rs1] / self.x[rs2];
             }
             Inst::Divuw { rd, rs1, rs2 } => {
+                self.cycle_pipline_stall_xx(rs1, rs2);
+
+                self.x_pipeline_delay[rd] =
+                    self.cycle_counter + div_cycle_count!(self.x[rs1] as u32, self.x[rs2] as u32);
                 self.x[rd] = ((self.x[rs1] as u32) / (self.x[rs2] as u32)) as i32 as u64;
             }
             Inst::Mul { rd, rs1, rs2 } => {
+                self.cycle_pipline_stall_xx(rs1, rs2);
+
+                // MULs are a 3 cycle delay
+                self.x_pipeline_delay[rd] = self.cycle_counter + 3;
                 self.x[rd] = (self.x[rs1] as i64).wrapping_mul(self.x[rs2] as i64) as u64;
             }
             Inst::Mulhu { rd, rs1, rs2 } => {
+                self.cycle_pipline_stall_xx(rs1, rs2);
+
+                // MULs are a 3 cycle delay
+                self.x_pipeline_delay[rd] = self.cycle_counter + 3;
                 self.x[rd] = ((self.x[rs1] as u128).wrapping_mul(self.x[rs2] as u128) >> 64) as u64;
             }
             Inst::Remw { rd, rs1, rs2 } => {
+                self.cycle_pipline_stall_xx(rs1, rs2);
+
+                self.x_pipeline_delay[rd] = self.cycle_counter
+                    + div_cycle_count!((self.x[rs1] as i32).abs(), (self.x[rs2] as i32).abs());
                 if self.x[rs2] == 0 {
                     self.x[rd] = (self.x[rs1] as i32) as u64;
                 } else {
@@ -781,6 +961,10 @@ impl Emulator {
                 }
             }
             Inst::Remu { rd, rs1, rs2 } => {
+                self.cycle_pipline_stall_xx(rs1, rs2);
+
+                self.x_pipeline_delay[rd] =
+                    self.cycle_counter + div_cycle_count!(self.x[rs1], self.x[rs2]);
                 if self.x[rs2] == 0 {
                     self.x[rd] = self.x[rs1];
                 } else {
@@ -788,6 +972,10 @@ impl Emulator {
                 }
             }
             Inst::Remuw { rd, rs1, rs2 } => {
+                self.cycle_pipline_stall_xx(rs1, rs2);
+
+                self.x_pipeline_delay[rd] =
+                    self.cycle_counter + div_cycle_count!(self.x[rs1] as u32, self.x[rs2] as u32);
                 if self.x[rs2] == 0 {
                     self.x[rd] = self.x[rs1] as u32 as u64;
                 } else {
@@ -867,10 +1055,40 @@ impl Emulator {
 
         self.pc = self.pc.wrapping_add(incr);
 
+        // every instruction takes at least 1 cycle
+        self.inst_counter += 1;
+        self.cycle_counter += 1;
+
         // make sure x0 is zero
         self.x[0] = 0;
 
         Ok(())
+    }
+
+    fn add_load_delay_f(&mut self, rd: FReg, addr: u64) {
+        // if cache hit, 3 cycle delay
+        if self.last_mem_access.abs_diff(addr) < CACHE_SIZE {
+            self.f_pipeline_delay[rd.0 as usize] = self.cycle_counter + 3;
+        }
+        // if cache miss, 200 cycle delay
+        else {
+            self.f_pipeline_delay[rd.0 as usize] = self.cycle_counter + 200;
+        }
+
+        self.last_mem_access = addr;
+    }
+
+    fn add_load_delay_x(&mut self, rd: Reg, addr: u64) {
+        // if cache hit, 3 cycle delay
+        if self.last_mem_access.abs_diff(addr) < CACHE_SIZE {
+            self.x_pipeline_delay[rd] = self.cycle_counter + 3;
+        }
+        // if cache miss, 200 cycle delay
+        else {
+            self.x_pipeline_delay[rd] = self.cycle_counter + 200;
+        }
+
+        self.last_mem_access = addr;
     }
 }
 

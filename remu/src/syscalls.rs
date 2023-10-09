@@ -6,6 +6,7 @@ use num_derive::FromPrimitive;
 
 #[derive(FromPrimitive, Debug)]
 pub enum Syscall {
+    Ioctl = 29,
     Faccessat = 48,
     Openat = 56,
     Close = 57,

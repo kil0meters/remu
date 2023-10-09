@@ -1,8 +1,10 @@
 use std::{
     collections::{HashMap, HashSet},
     num::NonZeroU64,
+    path::Path,
 };
 
+use elf::{endian::AnyEndian, ElfBytes};
 use num_traits::FromPrimitive;
 
 use crate::{
@@ -64,8 +66,6 @@ pub struct Emulator {
     // Similar to fuel_counter, but also takes into account intruction level parallelism and cache misses.
     // performance_counter: u64,
     pub exit_code: Option<u64>,
-
-    ignore_dynamic_linker_instructions: bool,
 }
 
 impl Emulator {
@@ -87,8 +87,6 @@ impl Emulator {
             profile_end_point: None,
             profiler: Profiler::new(),
 
-            ignore_dynamic_linker_instructions: true,
-
             memory,
             exit_code: None,
             inst_counter: 0,
@@ -102,6 +100,26 @@ impl Emulator {
             .expect("Failed to initialize aux vector");
 
         em
+    }
+
+    pub fn from_file<P>(path: P) -> Result<Emulator, anyhow::Error>
+    where
+        P: AsRef<Path>,
+    {
+        let file_data = std::fs::read(path).expect("Could not read file.");
+        let slice = file_data.as_slice();
+        let file = ElfBytes::<AnyEndian>::minimal_parse(slice)?;
+
+        match (file.ehdr.class, file.ehdr.e_type, file.ehdr.e_machine) {
+            // (64 bit, executable, risc_v arch)
+            (elf::file::Class::ELF64, 0x03 | 0x02, 0xF3) => log::info!("Parsing executable."),
+            _ => return Err(RVError::InvalidFileType.into()),
+        }
+
+        let memory = Memory::load_elf(file);
+        let emulator = Emulator::new(memory);
+
+        Ok(emulator)
     }
 
     pub fn profile_label(&mut self, label: &str) -> Result<(), RVError> {
@@ -198,6 +216,10 @@ impl Emulator {
         log::info!("{:x}: executing syscall {sc:?}", self.pc);
 
         match sc {
+            Syscall::Ioctl => {
+                self.x[A0] = 0;
+            }
+
             Syscall::Faccessat => {
                 self.x[A0] = -1i64 as u64;
                 // TODO: currently just noop (maybe that's fine, who knows)
@@ -512,6 +534,14 @@ impl Emulator {
     fn fetch(&self) -> Result<(Inst, u8), RVError> {
         let inst_data = self.memory.load::<u32>(self.pc)?;
         Ok(Inst::decode(inst_data))
+    }
+
+    pub fn run(&mut self) -> Result<u64, RVError> {
+        loop {
+            if let Some(exit_code) = self.fetch_and_execute()? {
+                return Ok(exit_code);
+            }
+        }
     }
 
     pub fn fetch_and_execute(&mut self) -> Result<Option<u64>, RVError> {

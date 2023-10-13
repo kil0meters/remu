@@ -214,27 +214,27 @@ impl Emulator {
         Ok(Inst::decode(inst_data))
     }
 
-    fn execute_block(&mut self) -> Result<(), RVError> {
-        let func = if let Some(stored) = self.jit_functions.get(&self.pc) {
-            stored.clone()
+    fn execute_block(&mut self) -> Result<Option<u64>, RVError> {
+        if let Some(stored) = self.jit_functions.get(&self.pc) {
+            stored.clone().run(self);
         } else {
-            let newfunc = Rc::new(RVFunction::compile(self));
+            let profile = self.profile_start_point.is_some();
+            let newfunc = Rc::new(RVFunction::compile(self, profile));
             self.jit_functions.insert(self.pc, newfunc.clone());
-            newfunc
-        };
+            newfunc.run(self);
+        }
 
-        func.run(self);
-
-        Ok(())
+        Ok(self.exit_code)
     }
 
     pub fn run(&mut self, jit: bool) -> Result<u64, RVError> {
-        // compile first function, then execute it
-
         if jit {
-            self.execute_block().expect("Failed to execute block");
-
-            Ok(0)
+            // jit
+            loop {
+                if let Some(exit_code) = self.execute_block()? {
+                    return Ok(exit_code);
+                }
+            }
         } else {
             // interp
             loop {
@@ -264,7 +264,7 @@ impl Emulator {
             self.profiler.running = false;
         }
 
-        // this log statement is nice but it is super slow unfortunately
+        // this log statement is nice but it is super slow even when not printing unfortunately
         // log::debug!("{:16x} {}", self.pc, inst.fmt(self.pc));
 
         self.execute(inst, incr as u64)?;

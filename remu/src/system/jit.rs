@@ -65,6 +65,47 @@ macro_rules! pipeline_stall {
     };
 }
 
+macro_rules! branch_impl {
+    ($btype:ident : $ops:ident, $profile:expr, $dynamic_labels:expr, $pc:expr, $rs1:expr, $rs2:expr, $offset:expr) => {
+        let branch_not_taken_label = $ops.new_dynamic_label();
+        my_dynasm!($ops
+            ;; if $profile { pipeline_stall!($ops, x.$rs1, x.$rs2); }
+
+            ;; load_reg!($ops, r9 <= $rs1)
+            ;; load_reg!($ops, r10 <= $rs2)
+            ; cmp r9, r10
+            ; $btype =>branch_not_taken_label
+            ;; if $profile { call_extern!($ops, branch_taken); }
+            ; mov r9, [a_pc]
+            ; add r9, $offset
+            ; mov [a_pc], r9
+
+            ; mov r9, a_emu => Emulator.inst_counter
+            ; add r9, 1
+            ; mov a_emu => Emulator.inst_counter, r9
+
+            ; jmp =>$dynamic_labels[&$pc.wrapping_add($offset as u64)]
+            ;=>branch_not_taken_label
+            ;; if $profile { call_extern!($ops, branch_not_taken); }
+        );
+    }
+}
+
+/// assumes rdx contains offset already, because that's necessary for the load_{size} calls
+macro_rules! add_load_delay {
+    ($ops:ident, $rd:ident) => {
+        my_dynasm!($ops
+            ; mov r8, $rd.0 as _
+            ;; call_extern!($ops, add_load_delay_x)
+        );
+    };
+}
+
+unsafe extern "win64" fn add_load_delay_x(emu: *mut Emulator, addr: u64, rd: Reg) {
+    let emulator = unsafe { &mut *emu };
+    emulator.profiler.add_load_delay_x(rd, addr, emulator.pc);
+}
+
 unsafe extern "win64" fn profiler_tick(emu: *mut Emulator) {
     let emulator = unsafe { &mut *emu };
     emulator.profiler.tick(emulator.pc);
@@ -105,7 +146,6 @@ unsafe extern "win64" fn branch_taken(emu: *mut Emulator) {
 
 unsafe extern "win64" fn store_u64(emu: *mut Emulator, offset: u64, rs2: u64) {
     let emulator = unsafe { &mut *emu };
-    // println!("storing {rs2:x} at offset={offset:x}");
     emulator
         .memory
         .store::<u64>(offset, rs2)
@@ -165,10 +205,8 @@ impl RVFunction {
     }
 
     /// compiles function starting at current pc, until the `ret` instruction is reached
-    pub fn compile(emulator: &mut Emulator) -> RVFunction {
+    pub fn compile(emulator: &mut Emulator, profile: bool) -> RVFunction {
         log::debug!("COMPILING FUNCTION {:x}", emulator.pc);
-
-        let profile = false;
 
         let mut ops = Assembler::new().expect("Failed to create assembler");
         let start = ops.offset();
@@ -185,16 +223,15 @@ impl RVFunction {
                 .load::<u32>(pc)
                 .expect("Failed to load instruction");
             let (inst, step) = Inst::decode(inst_data);
-            instructions.push((inst, step));
-
-            // create dynamic label for each instruction
-            dynamic_labels.insert(pc, ops.new_dynamic_label());
 
             match inst {
-                // TODO: More robust way to mark finished
-                Inst::Error(e) => {
-                    log::error!("{e}");
-                    break;
+                Inst::Error(inst) => {
+                    // 0 marks end, maybe, who knows
+                    if inst == 0 {
+                        break;
+                    } else {
+                        panic!("Invalid instruction: {inst}");
+                    }
                 }
 
                 // technically JALR could be used for an intra-function jump, but in practice no
@@ -208,6 +245,10 @@ impl RVFunction {
 
                 _ => {}
             }
+
+            // create dynamic label for each instruction to allow branches to work
+            instructions.push((inst, step));
+            dynamic_labels.insert(pc, ops.new_dynamic_label());
 
             pc += step as u64;
         }
@@ -235,11 +276,11 @@ impl RVFunction {
             );
 
             match inst {
-                Inst::Fence => todo!(),
+                Inst::Fence => {} // noop
                 Inst::Ecall => {
                     call_extern!(ops, syscall);
                 }
-                Inst::Ebreak => todo!(),
+                Inst::Ebreak => {} // noop
                 Inst::Error(e) => {
                     log::error!("{e}");
                 }
@@ -253,10 +294,19 @@ impl RVFunction {
                 }
                 Inst::Ld { rd, rs1, offset } => {
                     my_dynasm!(ops
-                        ;; if profile { pipeline_stall!(ops, x.rs1); }
+                        ;; if profile {
+                            my_dynasm!(ops
+                                ;; pipeline_stall!(ops, x.rs1)
+
+                                ;; load_reg!(ops, rdx <= rs1)
+                                ; add rdx, offset
+                                ;; add_load_delay!(ops, rd)
+                            );
+                        }
 
                         ;; load_reg!(ops, rdx <= rs1)
                         ; add rdx, offset
+
                         ;; call_extern!(ops, load_u64)
                         ;; store_reg!(ops, rax => rd)
                     );
@@ -268,7 +318,7 @@ impl RVFunction {
                 Inst::Lbu { rd, rs1, offset } => todo!(),
                 Inst::Sd { rs1, rs2, offset } => {
                     my_dynasm!(ops
-                        // ;; pipeline_stall!(ops, x.rs1, x.rs2)
+                        ;; if profile { pipeline_stall!(ops, x.rs1, x.rs2); }
 
                         ;; load_reg!(ops, rdx <= rs1)
                         ;; load_reg!(ops, r8 <= rs2)
@@ -382,51 +432,29 @@ impl RVFunction {
                     );
                 }
                 Inst::Beq { rs1, rs2, offset } => {
-                    let branch_not_taken_label = ops.new_dynamic_label();
-                    my_dynasm!(ops
-                        ;; if profile { pipeline_stall!(ops, x.rs1, x.rs2); }
-
-                        ;; load_reg!(ops, r9 <= rs1)
-                        ;; load_reg!(ops, r10 <= rs2)
-                        ; cmp r9, r10
-                        ; jne =>branch_not_taken_label
-                            ;; call_extern!(ops, branch_taken)
-                            ; mov r9, [a_pc]
-                            ; add r9, offset
-                            ; mov [a_pc], r9
-
-                            ; mov r9, a_emu => Emulator.inst_counter
-                            ; add r9, 1
-                            ; mov a_emu => Emulator.inst_counter, r9
-
-                            ; jmp =>dynamic_labels[&pc.wrapping_add(offset as u64)]
-                        ;=>branch_not_taken_label
-                            ;; call_extern!(ops, branch_not_taken)
-                    );
+                    branch_impl!(jne :
+                        ops, profile, dynamic_labels, pc, rs1, rs2, offset);
                 }
-                Inst::Bne { rs1, rs2, offset } => todo!(),
+                Inst::Bne { rs1, rs2, offset } => {
+                    branch_impl!(je :
+                        ops, profile, dynamic_labels, pc, rs1, rs2, offset);
+                }
                 Inst::Blt { rs1, rs2, offset } => {
-                    todo!();
-                    my_dynasm!(ops
-                        ;; pipeline_stall!(ops, x.rs1, x.rs2)
-
-                        ;; load_reg!(ops, r9 <= rs1)
-                        ;; load_reg!(ops, r10 <= rs2)
-                        ; cmp r9, r10
-                        ; jge ->branch_not_taken
-                            ;; call_extern!(ops, branch_taken)
-                            ; mov r9, [a_pc]
-                            ; add a_pc, offset
-                            ; sub a_pc, step as _
-                            ; mov [a_pc], r9
-                            ; jmp =>dynamic_labels[&pc.wrapping_add(offset as u64)]
-                        ;->branch_not_taken:
-                            ;; call_extern!(ops, branch_not_taken)
-                    );
+                    branch_impl!(jge :
+                        ops, profile, dynamic_labels, pc, rs1, rs2, offset);
                 }
-                Inst::Bltu { rs1, rs2, offset } => todo!(),
-                Inst::Bge { rs1, rs2, offset } => todo!(),
-                Inst::Bgeu { rs1, rs2, offset } => todo!(),
+                Inst::Bltu { rs1, rs2, offset } => {
+                    branch_impl!(jae :
+                        ops, profile, dynamic_labels, pc, rs1, rs2, offset);
+                }
+                Inst::Bge { rs1, rs2, offset } => {
+                    branch_impl!(jl :
+                        ops, profile, dynamic_labels, pc, rs1, rs2, offset);
+                }
+                Inst::Bgeu { rs1, rs2, offset } => {
+                    branch_impl!(jb :
+                        ops, profile, dynamic_labels, pc, rs1, rs2, offset);
+                }
                 Inst::Mul { rd, rs1, rs2 } => todo!(),
                 Inst::Mulhu { rd, rs1, rs2 } => todo!(),
                 Inst::Remw { rd, rs1, rs2 } => todo!(),

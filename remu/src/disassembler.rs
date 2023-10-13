@@ -1,10 +1,12 @@
 use std::collections::HashMap;
 
-use elf::{endian::EndianParse, ElfBytes};
+use elf::{
+    abi::{STT_FILE, STT_FUNC, STT_NOTYPE},
+    endian::EndianParse,
+    ElfBytes,
+};
 
 use crate::{instruction::Inst, memory::Memory};
-
-const STT_FUNC: u8 = 2;
 
 #[derive(Clone)]
 pub struct Disassembler {
@@ -24,7 +26,8 @@ impl Disassembler {
         let (symbol_table, string_table) = elf.symbol_table().unwrap().unwrap();
 
         for symbol in symbol_table.iter() {
-            if symbol.st_symtype() == STT_FUNC {
+            let symtype = symbol.st_symtype();
+            if symtype == STT_FUNC || symtype == STT_NOTYPE {
                 let symbol_name = string_table.get(symbol.st_name as usize).unwrap();
                 self.symbols
                     .push((symbol.st_value + offset, symbol_name.to_string()));
@@ -37,12 +40,12 @@ impl Disassembler {
                 .push((plt_header.sh_addr + offset, ".plt".to_string()));
         }
 
-        let text_header = elf
-            .section_header_by_name(".text")
-            .unwrap()
-            .expect("no .text section");
-        self.symbols
-            .push((text_header.sh_addr + offset, ".text".to_string()));
+        // let text_header = elf
+        //     .section_header_by_name(".text")
+        //     .unwrap()
+        //     .expect("no .text section");
+        // self.symbols
+        //     .push((text_header.sh_addr + offset, ".text".to_string()));
 
         self.symbols.sort_unstable_by_key(|a| a.0);
     }
@@ -94,7 +97,7 @@ impl Disassembler {
                 pc += *step as u64;
             }
 
-            writer.push_str("\n\n\n\n\n");
+            writer.push_str("\n");
         }
 
         writer
@@ -138,8 +141,14 @@ impl Disassembler {
     fn disassemble_inst(&self, inst: Inst, pc: u64) -> String {
         let mut writer = String::new();
 
-        if let Some(symbol) = self.get_symbol_at_addr(pc) {
-            writer.push_str(&format!("\n{symbol}:\n"));
+        let mut idx = self.symbols.partition_point(|a| a.0 < pc);
+        if let Some(mut symbol) = self.symbols.get(idx) {
+            while symbol.0 == pc {
+                writer.push_str(&format!("{}:\n", symbol.1));
+
+                idx += 1;
+                symbol = &self.symbols[idx];
+            }
         }
 
         writer.push_str(&format!("{pc:16x} {}", inst.fmt(pc)));

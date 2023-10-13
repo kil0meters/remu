@@ -24,7 +24,7 @@ struct Arguments {
     #[clap(short, long)]
     jit: bool,
 
-    /// The label to profile, default="main"
+    /// The label to profile
     #[clap(short, long)]
     label: Option<String>,
 
@@ -81,9 +81,14 @@ fn main() -> Result<()> {
         let mut app = ui::App::new(emulator)?;
         app.main_loop()
     } else {
+        if let Some(ref label) = args.label {
+            emulator.profile_label(label)?;
+        }
+
         emulator.run(args.jit)?;
 
         print!("{}", emulator.stdout);
+
         eprintln!("------------------------------");
         eprintln!("Program exited with code {}", emulator.exit_code.unwrap());
         eprintln!("Instruction count: {}", emulator.inst_counter);
@@ -101,12 +106,6 @@ fn main() -> Result<()> {
             "Estimated time to execute on a (bad) 4GHz processor: {}s",
             emulator.profiler.cycle_count as f64 / 4_000_000_000.0
         );
-
-        // loop {
-        //     if let Some(exit_code) = emulator.fetch_and_execute()? {
-        //         break;
-        //     }
-        // }
 
         Ok(())
     }

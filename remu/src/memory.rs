@@ -12,24 +12,14 @@ use log::{debug, warn};
 
 use crate::{
     disassembler::Disassembler,
-    emulator::{FileDescriptor, STACK_START},
     error::RVError,
+    files::{FileDescriptor, LD_LINUX_DATA},
+    system::STACK_START,
 };
 
 const PAGE_BITS: u64 = 12;
 pub const PAGE_SIZE: u64 = 1 << PAGE_BITS;
 pub const PAGE_MASK: u64 = (1 << PAGE_BITS) - 1;
-
-pub const LD_LINUX_DATA: &'static [u8] = include_bytes!("../../res/ld-linux-riscv64-lp64d.so.1");
-pub const LIBC_DATA: &'static [u8] = include_bytes!("../../res/libc.so.6");
-pub const LIBCPP_DATA: &'static [u8] = include_bytes!("../../res/libstdc++.so");
-pub const LIBM_DATA: &'static [u8] = include_bytes!("../../res/libm.so.6");
-pub const LIBGCCS_DATA: &'static [u8] = include_bytes!("../../res/libgcc_s.so.1");
-
-pub const LIBC_FILE_DESCRIPTOR: i64 = 10;
-pub const LIBCPP_FILE_DESCRIPTOR: i64 = 11;
-pub const LIBM_FILE_DESCRIPTOR: i64 = 12;
-pub const LIBGCCS_FILE_DESCRIPTOR: i64 = 13;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 struct HeapIndex(u8);
@@ -445,6 +435,8 @@ impl Memory {
         let data = &file_descriptor.data[o..max];
 
         self.write_n(data, buf, data.len() as u64)?;
+
+        file_descriptor.offset += data.len() as u64;
 
         Ok(data.len() as i64)
     }

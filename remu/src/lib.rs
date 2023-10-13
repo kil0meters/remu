@@ -1,10 +1,10 @@
 mod auxvec;
 pub mod disassembler;
-pub mod emulator;
 pub mod error;
+mod files;
 mod instruction;
 pub mod memory;
 mod profiler;
 mod register;
-mod syscalls;
+pub mod system;
 pub mod time_travel;

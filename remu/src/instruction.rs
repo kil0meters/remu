@@ -41,7 +41,7 @@ pub enum Inst {
     Add { rd: Reg, rs1: Reg, rs2: Reg },
     Addw { rd: Reg, rs1: Reg, rs2: Reg },
     Addi { rd: Reg, rs1: Reg, imm: i32 },
-    Addiw { rd: Reg, rs1: Reg, imm: u32 },
+    Addiw { rd: Reg, rs1: Reg, imm: i32 },
     Div { rd: Reg, rs1: Reg, rs2: Reg },
     Divw { rd: Reg, rs1: Reg, rs2: Reg },
     Divu { rd: Reg, rs1: Reg, rs2: Reg },
@@ -301,7 +301,7 @@ impl Inst {
 
             0b0011011 => match funct3 {
                 0b000 => {
-                    let imm = ((inst & 0b11111111111100000000000000000000) as i32 >> 20) as u32;
+                    let imm = (inst & 0b11111111111100000000000000000000) as i32 >> 20;
                     Inst::Addiw { rd, rs1, imm }
                 }
                 0b001 => match funct7 {
@@ -542,10 +542,14 @@ impl Inst {
                                 | (inst & 0b1100000000000) >> 7; // imm[5:4]
                         let rd = Reg((((inst >> 2) & 0b111) + 8) as u8);
 
-                        Inst::Addi {
-                            rd,
-                            rs1: SP,
-                            imm: imm as i32,
+                        if imm == 0 {
+                            Inst::Error(inst as u32)
+                        } else {
+                            Inst::Addi {
+                                rd,
+                                rs1: SP,
+                                imm: imm as i32,
+                            }
                         }
                     }
                     0b001 => {
@@ -658,7 +662,7 @@ impl Inst {
                         Inst::Addiw {
                             rd,
                             rs1: rd,
-                            imm: imm as u32,
+                            imm: imm as i32,
                         }
                     }
                     0b010 => {

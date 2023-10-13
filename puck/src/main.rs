@@ -4,7 +4,7 @@ use elf::{endian::AnyEndian, ElfBytes};
 use log::LevelFilter;
 use simplelog::{ConfigBuilder, SimpleLogger};
 
-use remu::{disassembler::Disassembler, emulator::Emulator, memory::Memory};
+use remu::{disassembler::Disassembler, memory::Memory, system::Emulator};
 
 mod ui;
 
@@ -19,6 +19,10 @@ struct Arguments {
     /// Output the disassembly of the executable, then exit
     #[clap(short, long)]
     disassemble: bool,
+
+    /// Enables the just-in-time recompiler (x86_64 only)
+    #[clap(short, long)]
+    jit: bool,
 
     /// The label to profile, default="main"
     #[clap(short, long)]
@@ -77,31 +81,32 @@ fn main() -> Result<()> {
         let mut app = ui::App::new(emulator)?;
         app.main_loop()
     } else {
-        emulator.profile_label(&args.label.unwrap_or("main".to_string()))?;
+        emulator.run(args.jit)?;
 
-        loop {
-            if let Some(exit_code) = emulator.fetch_and_execute()? {
-                print!("{}", emulator.stdout);
-                eprintln!("------------------------------");
-                eprintln!("Program exited with code {exit_code}");
-                eprintln!("Estimated cycle count: {}", emulator.profiler.cycle_count);
-                eprintln!(
-                    "Cache hit/miss ratio: {}",
-                    emulator.profiler.cache_hit_count as f64
-                        / emulator.profiler.cache_miss_count as f64
-                );
-                eprintln!(
-                    "Branch predict/misspredict ratio: {}",
-                    emulator.profiler.predicted_branch_count as f64
-                        / emulator.profiler.mispredicted_branch_count as f64
-                );
-                eprintln!(
-                    "Estimated time to execute on a (bad) 4GHz processor: {}s",
-                    emulator.profiler.cycle_count as f64 / 4_000_000_000.0
-                );
-                break;
-            }
-        }
+        print!("{}", emulator.stdout);
+        eprintln!("------------------------------");
+        eprintln!("Program exited with code {}", emulator.exit_code.unwrap());
+        eprintln!("Instruction count: {}", emulator.inst_counter);
+        eprintln!("Estimated cycle count: {}", emulator.profiler.cycle_count);
+        eprintln!(
+            "Cache hit/miss ratio: {}",
+            emulator.profiler.cache_hit_count as f64 / emulator.profiler.cache_miss_count as f64
+        );
+        eprintln!(
+            "Branch predict/misspredict ratio: {}",
+            emulator.profiler.predicted_branch_count as f64
+                / emulator.profiler.mispredicted_branch_count as f64
+        );
+        eprintln!(
+            "Estimated time to execute on a (bad) 4GHz processor: {}s",
+            emulator.profiler.cycle_count as f64 / 4_000_000_000.0
+        );
+
+        // loop {
+        //     if let Some(exit_code) = emulator.fetch_and_execute()? {
+        //         break;
+        //     }
+        // }
 
         Ok(())
     }

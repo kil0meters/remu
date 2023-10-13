@@ -1,24 +1,27 @@
 use std::{
-    collections::{HashMap, HashSet},
+    collections::{BTreeMap, HashMap},
     num::NonZeroU64,
     path::Path,
+    rc::Rc,
 };
 
 use elf::{endian::AnyEndian, ElfBytes};
-use num_traits::FromPrimitive;
 
 use crate::{
     auxvec::{AuxPair, Auxv, RANDOM_BYTES},
     error::RVError,
+    files::FileDescriptor,
     instruction::Inst,
-    memory::{
-        Memory, LIBCPP_DATA, LIBCPP_FILE_DESCRIPTOR, LIBC_DATA, LIBC_FILE_DESCRIPTOR, LIBGCCS_DATA,
-        LIBGCCS_FILE_DESCRIPTOR, LIBM_DATA, LIBM_FILE_DESCRIPTOR, PAGE_SIZE,
-    },
+    memory::{Memory, PAGE_SIZE},
     profiler::Profiler,
     register::*,
-    syscalls::Syscall,
 };
+
+use self::jit::RVFunction;
+
+mod interp;
+mod jit;
+mod syscall;
 
 pub const STACK_START: u64 = -1i64 as u64;
 
@@ -33,13 +36,6 @@ macro_rules! div_cycle_count {
             .ilog2()
             .saturating_sub(($divisor).max(1).ilog2())) as u64
     };
-}
-
-#[derive(Clone)]
-pub struct FileDescriptor {
-    // current file read location
-    pub offset: u64,
-    pub data: &'static [u8],
 }
 
 #[derive(Clone)]
@@ -62,6 +58,8 @@ pub struct Emulator {
     /// The number of instructions executed over the lifecycle of the emulator.
     pub inst_counter: u64,
     pub max_memory: u64,
+
+    jit_functions: BTreeMap<u64, Rc<RVFunction>>,
 
     // Similar to fuel_counter, but also takes into account intruction level parallelism and cache misses.
     // performance_counter: u64,
@@ -86,6 +84,8 @@ impl Emulator {
             profile_start_point: None,
             profile_end_point: None,
             profiler: Profiler::new(),
+
+            jit_functions: BTreeMap::new(),
 
             memory,
             exit_code: None,
@@ -133,9 +133,14 @@ impl Emulator {
         Ok(())
     }
 
-    pub fn set_stdin(&mut self, data: &'static [u8]) {
-        self.file_descriptors
-            .insert(0, FileDescriptor { offset: 0, data });
+    pub fn set_stdin(&mut self, data: &[u8]) {
+        self.file_descriptors.insert(
+            0,
+            FileDescriptor {
+                offset: 0,
+                data: data.into(),
+            },
+        );
     }
 
     // https://github.com/torvalds/linux/blob/master/fs/binfmt_elf.c#L175
@@ -166,7 +171,7 @@ impl Emulator {
         self.x[SP] -= 8; // argv[0]
         self.memory.store(self.x[SP], program_name_addr)?;
 
-        log::debug!("Writing argv to addr=0x{:x}", self.x[SP]);
+        log::trace!("Writing argv to addr=0x{:x}", self.x[SP]);
 
         // envp
         // self.x[SP] -= 8; // envp[0]
@@ -192,7 +197,7 @@ impl Emulator {
 
         for AuxPair(key, val) in aux_values.into_iter() {
             self.x[SP] -= 16;
-            log::debug!("Writing {:?}=0x{:x} at 0x{:x}", key, val, self.x[SP]);
+            log::trace!("Writing {:?}=0x{:x} at 0x{:x}", key, val, self.x[SP]);
             // self.memory.store_u64(self.x[SP], key as u64);
             self.memory.store(self.x[SP], key as u64)?;
             self.memory.store(self.x[SP] + 8, val)?;
@@ -204,342 +209,38 @@ impl Emulator {
         Ok(())
     }
 
-    // emulates linux syscalls
-    fn syscall(&mut self, id: u64) -> Result<(), RVError> {
-        let arg = self.x[A0];
-
-        let sc: Syscall = FromPrimitive::from_u64(id).expect(&format!(
-            "{:16x} {} Unknown syscall: {id}",
-            self.pc, self.inst_counter
-        ));
-
-        log::info!("{:x}: executing syscall {sc:?}", self.pc);
-
-        match sc {
-            Syscall::Ioctl => {
-                self.x[A0] = 0;
-            }
-
-            Syscall::Faccessat => {
-                self.x[A0] = -1i64 as u64;
-                // TODO: currently just noop (maybe that's fine, who knows)
-            }
-
-            Syscall::Openat => {
-                let fd = self.x[A0] as i64;
-                let filename = self.memory.read_string_n(self.x[A1], 512)?;
-                let _flags = self.x[A1];
-
-                log::info!("Opening file fd={fd}, name={filename}");
-                // log::info!("Flags={_flags:b}");
-
-                if filename == "/lib/tls/libc.so.6" {
-                    self.file_descriptors.insert(
-                        LIBC_FILE_DESCRIPTOR,
-                        FileDescriptor {
-                            offset: 0,
-                            data: LIBC_DATA,
-                        },
-                    );
-
-                    self.x[A0] = LIBC_FILE_DESCRIPTOR as u64;
-                } else if filename == "/lib/tls/libstdc++.so.6" {
-                    self.file_descriptors.insert(
-                        LIBCPP_FILE_DESCRIPTOR,
-                        FileDescriptor {
-                            offset: 0,
-                            data: LIBCPP_DATA,
-                        },
-                    );
-
-                    self.x[A0] = LIBCPP_FILE_DESCRIPTOR as u64;
-                } else if filename == "/lib/tls/libm.so.6" {
-                    self.file_descriptors.insert(
-                        LIBM_FILE_DESCRIPTOR,
-                        FileDescriptor {
-                            offset: 0,
-                            data: LIBM_DATA,
-                        },
-                    );
-
-                    self.x[A0] = LIBM_FILE_DESCRIPTOR as u64;
-                } else if filename == "/lib/tls/libgcc_s.so.1" {
-                    self.file_descriptors.insert(
-                        LIBGCCS_FILE_DESCRIPTOR,
-                        FileDescriptor {
-                            offset: 0,
-                            data: LIBGCCS_DATA,
-                        },
-                    );
-
-                    self.x[A0] = LIBGCCS_FILE_DESCRIPTOR as u64;
-                } else {
-                    self.x[A0] = (-1i64) as u64;
-                }
-            }
-
-            Syscall::Close => {
-                let fd = self.x[A0] as i64;
-
-                if self.file_descriptors.remove(&fd).is_some() {
-                    self.x[A0] = 0;
-                } else {
-                    self.x[A0] = -1i64 as u64;
-                }
-            }
-
-            Syscall::Lseek => {
-                let fd = self.x[A0] as i64;
-                let offset = self.x[A1];
-                let whence = self.x[A2];
-
-                match self.file_descriptors.get_mut(&fd) {
-                    Some(descriptor) => {
-                        match whence {
-                            // SEEK_SET
-                            0 => {
-                                descriptor.offset = offset;
-                            }
-
-                            // SEEK_CUR
-                            1 => {
-                                descriptor.offset = descriptor.offset.wrapping_add(offset);
-                            }
-
-                            // SEEK_END
-                            2 => {
-                                descriptor.offset =
-                                    (descriptor.data.len() as u64).wrapping_add(offset);
-                            }
-
-                            _ => {
-                                self.x[A0] = -1i64 as u64;
-                            }
-                        }
-                    }
-                    None => {
-                        self.x[A0] = -1i64 as u64;
-                    }
-                }
-            }
-
-            Syscall::Read => {
-                let fd = self.x[A0] as i64;
-                let buf = self.x[A1];
-                let count = self.x[A2];
-
-                log::info!("Reading {count} bytes from file fd={fd} to addr={buf:x}");
-
-                // special case input
-                if let Some(entry) = self.file_descriptors.get_mut(&fd) {
-                    self.x[A0] = self.memory.read_file(entry, buf, count)? as u64;
-                } else {
-                    self.x[A0] = -1i64 as u64;
-                }
-            }
-
-            Syscall::Write => {
-                let fd = self.x[A0];
-                assert!(fd <= 2);
-
-                let ptr = self.x[A1];
-                let len = self.x[A2];
-
-                log::debug!(
-                    "Writing to file={}, addr={:x}, nbytes={}",
-                    self.x[A0],
-                    self.x[A1],
-                    self.x[A2]
-                );
-
-                let s = self.memory.read_string_n(ptr, len)?;
-                self.stdout.push_str(&s);
-
-                self.x[A0] = len;
-            }
-
-            Syscall::Writev => {
-                let fd = self.x[A0];
-                assert!(fd <= 2);
-
-                let iovecs = self.x[A1];
-                let iovcnt = self.x[A2];
-
-                for i in 0..iovcnt {
-                    let ptr = self.memory.load(iovecs + (i * 16))?;
-                    let len = self.memory.load(iovecs + 8 + (i * 16))?;
-
-                    let s = self.memory.read_string_n(ptr, len)?;
-                    self.stdout.push_str(&s);
-                }
-            }
-
-            Syscall::Readlinkat => {
-                // let dirfd = self.x[A0];
-                let addr = self.x[A1];
-                let buf_addr = self.x[A2];
-                let bufsize = self.x[A3];
-
-                let s = self.memory.read_string_n(addr, 512)?;
-
-                if s == "/proc/self/exe" {
-                    self.memory.write_n(b"/prog\0", buf_addr, bufsize)?;
-                    self.x[A0] = 5;
-                } else {
-                    self.x[A0] = -1i64 as u64;
-                }
-            }
-
-            Syscall::Exit => {
-                self.exit_code = Some(arg);
-            }
-
-            Syscall::ExitGroup => {
-                self.exit_code = Some(arg);
-            }
-
-            Syscall::SetTidAddress => {
-                self.x[A0] = 0;
-            }
-
-            Syscall::Futex => {
-                let uaddr = self.x[A0];
-                let futex_op = self.x[A1];
-                let val = self.x[A2];
-                let _timeout_addr = self.x[A3];
-                let _val3 = self.x[A4];
-
-                log::info!("futex_op = {futex_op} val={val}");
-
-                // FUTEX_WAIT
-                if futex_op == 128 {
-                    self.memory.store(uaddr, 0u64)?;
-                }
-
-                self.x[A0] = 0;
-            }
-
-            Syscall::SetRobustList => {
-                self.x[A0] = 0;
-            }
-
-            Syscall::ClockGettime => {
-                // noop
-            }
-
-            Syscall::Tgkill => {
-                self.x[A0] = -1i64 as u64;
-            }
-
-            Syscall::RtSigaction => {
-                self.x[A0] = 0;
-            }
-
-            Syscall::RtSigprocmask => {
-                self.x[A0] = 0;
-            }
-
-            Syscall::Getpid => {
-                self.x[A0] = 0;
-            }
-
-            Syscall::Gettid => {
-                self.x[A0] = 0;
-            }
-
-            Syscall::Brk => {
-                let addr_before = self.memory.brk(0);
-                self.x[A0] = self.memory.brk(arg);
-
-                log::info!(
-                    "Allocated {} bytes of memory to addr=0x{addr_before:x}",
-                    self.x[A0] - addr_before
-                );
-            }
-
-            Syscall::Munmap => {
-                // who needs to free memory
-                self.x[A0] = 0;
-            }
-
-            Syscall::Mmap => {
-                let addr = self.x[A0];
-                let len = self.x[A1];
-                let _prot = self.x[A2];
-                let flags = self.x[A3];
-                let fd = self.x[A4] as i64;
-                let offset = self.x[A5];
-
-                log::info!(
-                    "mmap: Allocating {len} bytes fd={}, offset={offset} requested addr={addr:x} flags={flags}",
-                    fd as i64
-                );
-
-                if fd == -1 {
-                    // Only give address if MMAP_FIXED
-                    if (flags & 0x10) != 0 {
-                        self.x[A0] = self.memory.mmap(addr, len) as u64;
-                    } else {
-                        self.x[A0] = self.memory.mmap(0, len) as u64;
-                    }
-                } else if let Some(descriptor) = self.file_descriptors.get_mut(&fd) {
-                    self.x[A0] = self.memory.mmap_file(descriptor, addr, offset, len)? as u64;
-                } else {
-                    self.x[A0] = -1i64 as u64;
-                }
-            }
-
-            Syscall::Mprotect => {
-                self.x[A0] = 0;
-            }
-
-            Syscall::Prlimit64 => {
-                self.x[A0] = 0;
-            }
-
-            Syscall::Getrandom => {
-                let buf = self.x[A0];
-                let buflen = self.x[A1];
-
-                // we want this emulator to be deterministic
-                for i in buf..(buf + buflen) {
-                    self.memory.store::<u8>(i, 0xff)?;
-                }
-
-                self.x[A0] = buflen;
-            }
-            Syscall::Newfstatat => {
-                let fd = self.x[A0] as i64;
-                let pathname_ptr = self.x[A1];
-                let _statbuf = self.x[A2];
-                let flags = self.x[A3];
-
-                let pathname = self.memory.read_string_n(pathname_ptr, 512)?;
-                log::info!("newfstatat for fd={fd} path=\"{pathname}\" flags={flags}");
-
-                if fd == -1 {
-                    self.x[A0] = 0;
-                } else {
-                    self.x[A0] = 0;
-                }
-            }
-            Syscall::SchedYield => {
-                self.x[A0] = 0;
-            }
-        }
-
-        Ok(())
-    }
-
-    fn fetch(&self) -> Result<(Inst, u8), RVError> {
+    pub fn fetch(&self) -> Result<(Inst, u8), RVError> {
         let inst_data = self.memory.load::<u32>(self.pc)?;
         Ok(Inst::decode(inst_data))
     }
 
-    pub fn run(&mut self) -> Result<u64, RVError> {
-        loop {
-            if let Some(exit_code) = self.fetch_and_execute()? {
-                return Ok(exit_code);
+    fn execute_block(&mut self) -> Result<(), RVError> {
+        let func = if let Some(stored) = self.jit_functions.get(&self.pc) {
+            stored.clone()
+        } else {
+            let newfunc = Rc::new(RVFunction::compile(self));
+            self.jit_functions.insert(self.pc, newfunc.clone());
+            newfunc
+        };
+
+        func.run(self);
+
+        Ok(())
+    }
+
+    pub fn run(&mut self, jit: bool) -> Result<u64, RVError> {
+        // compile first function, then execute it
+
+        if jit {
+            self.execute_block().expect("Failed to execute block");
+
+            Ok(0)
+        } else {
+            // interp
+            loop {
+                if let Some(exit_code) = self.fetch_and_execute()? {
+                    return Ok(exit_code);
+                }
             }
         }
     }
@@ -604,8 +305,7 @@ impl Emulator {
             Inst::Ecall => {
                 self.profiler.pipeline_stall_x(A7, self.pc);
 
-                let id = self.x[A7];
-                self.syscall(id)?;
+                self.syscall()?;
             }
             Inst::Error(e) => {
                 log::error!("unknown instruction: {e:x}");
@@ -731,7 +431,7 @@ impl Emulator {
             Inst::Addiw { rd, rs1, imm } => {
                 self.profiler.pipeline_stall_x(rs1, self.pc);
 
-                self.x[rd] = (self.x[rs1] as i32).wrapping_add(imm as i32) as u64;
+                self.x[rd] = (self.x[rs1] as i32).wrapping_add(imm) as u64;
             }
             Inst::And { rd, rs1, rs2 } => {
                 self.profiler.pipeline_stall_xx(rs1, rs2, self.pc);

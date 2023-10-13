@@ -10,7 +10,7 @@ use ratatui::{
 use ratatui_textarea::TextArea;
 use std::{io::Stdout, time::Duration};
 
-use remu::{emulator::Emulator, time_travel::TimeTravel};
+use remu::{system::Emulator, time_travel::TimeTravel};
 
 pub struct App {
     time_travel: TimeTravel,

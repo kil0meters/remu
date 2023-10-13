@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use crate::emulator::Emulator;
+use crate::system::Emulator;
 
 // number of instructions
 const B_STATE_INTERVAL: u64 = 10000;

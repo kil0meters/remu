@@ -6,6 +6,8 @@ edition = "2021"
 [dependencies]
 anyhow = "1.0.69"
 byteorder = "1.4.3"
+dynasm = "2.0.0"
+dynasmrt = "2.0.0"
 elf = "0.7.1"
 log = "0.4.17"
 num-derive = "0.4.0"

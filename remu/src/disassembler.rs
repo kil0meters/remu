@@ -32,17 +32,15 @@ impl Disassembler {
         }
 
         // also push .text and .plt start sections
-        let plt_header = elf
-            .section_header_by_name(".plt")
-            .unwrap()
-            .expect("no .plt section");
-        self.symbols
-            .push((plt_header.sh_addr + offset, ".plt".to_string()));
+        if let Some(plt_header) = elf.section_header_by_name(".plt").unwrap() {
+            self.symbols
+                .push((plt_header.sh_addr + offset, ".plt".to_string()));
+        }
 
         let text_header = elf
-            .section_header_by_name(".plt")
+            .section_header_by_name(".text")
             .unwrap()
-            .expect("no .plt section");
+            .expect("no .text section");
         self.symbols
             .push((text_header.sh_addr + offset, ".text".to_string()));
 
@@ -58,32 +56,29 @@ impl Disassembler {
 
         for section_name in [".text", ".plt"] {
             // add instructions
-            let section_header = elf
-                .section_header_by_name(section_name)
-                .unwrap()
-                .expect("ELF file does not have a required section");
+            if let Some(section_header) = elf.section_header_by_name(section_name).unwrap() {
+                let start = section_header.sh_addr;
+                let end = start + section_header.sh_size;
+                text_regions.push((start, end));
 
-            let start = section_header.sh_addr;
-            let end = start + section_header.sh_size;
-            text_regions.push((start, end));
+                let (text_data, _) = elf
+                    .section_data(&section_header)
+                    .expect("Failed to get text data");
 
-            let (text_data, _) = elf
-                .section_data(&section_header)
-                .expect("Failed to get text data");
+                // walk through until we reach the end
+                let mut pc = 0;
+                while pc < section_header.sh_size as usize {
+                    // should be fine, right?
+                    let inst_data = (text_data[pc] as u32)
+                        | ((text_data[pc + 1] as u32) << 8)
+                        | ((*text_data.get(pc + 2).unwrap_or(&0) as u32) << 16)
+                        | ((*text_data.get(pc + 3).unwrap_or(&0) as u32) << 24);
 
-            // walk through until we reach the end
-            let mut pc = 0;
-            while pc < section_header.sh_size as usize {
-                // should be fine, right?
-                let inst_data = (text_data[pc] as u32)
-                    | ((text_data[pc + 1] as u32) << 8)
-                    | ((*text_data.get(pc + 2).unwrap_or(&0) as u32) << 16)
-                    | ((*text_data.get(pc + 3).unwrap_or(&0) as u32) << 24);
+                    let (inst, step) = Inst::decode(inst_data);
 
-                let (inst, step) = Inst::decode(inst_data);
-
-                instructions.insert(pc as u64 + start, (inst, step));
-                pc += step as usize;
+                    instructions.insert(pc as u64 + start, (inst, step));
+                    pc += step as usize;
+                }
             }
         }
 

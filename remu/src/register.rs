@@ -6,6 +6,7 @@ use std::{
 };
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[repr(transparent)]
 pub struct Reg(pub u8);
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]

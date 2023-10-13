@@ -1,10 +1,11 @@
-use std::{collections::HashMap, mem};
+use std::{collections::HashMap, mem, num::NonZeroU64};
 
 use dynasm::dynasm;
 use dynasmrt::{x64::Assembler, AssemblyOffset, DynasmApi, DynasmLabelApi, ExecutableBuffer};
 
 use crate::{
     instruction::Inst,
+    profiler::Profiler,
     register::{Reg, RA},
     system::Emulator,
 };
@@ -157,6 +158,16 @@ unsafe extern "win64" fn load_u64(emu: *mut Emulator, offset: u64) -> u64 {
     emulator.memory.load(offset).expect("Failed to store")
 }
 
+unsafe extern "win64" fn start_profile(emu: *mut Emulator) {
+    let emulator = unsafe { &mut *emu };
+    emulator.profiler.running = true;
+}
+
+unsafe extern "win64" fn end_profile(emu: *mut Emulator) {
+    let emulator = unsafe { &mut *emu };
+    emulator.profiler.running = false;
+}
+
 unsafe extern "win64" fn debug_print_registers(emu: *mut Emulator) {
     let emulator = unsafe { &mut *emu };
     println!("{}", emulator.print_registers());
@@ -261,6 +272,8 @@ impl RVFunction {
             ; mov [rsp + 0x48], r9
         );
 
+        let mut started_profile = false;
+
         let mut pc = emulator.pc;
 
         for (inst, step) in instructions {
@@ -274,6 +287,11 @@ impl RVFunction {
                 ;=>current_label
                 // ;; call_extern!(ops, log_inst)
             );
+
+            if NonZeroU64::new(pc) == emulator.profile_start_point {
+                started_profile = true;
+                call_extern!(ops, start_profile);
+            }
 
             match inst {
                 Inst::Fence => {} // noop
@@ -394,6 +412,8 @@ impl RVFunction {
                 Inst::Auipc { rd, imm } => todo!(),
                 Inst::Jal { rd, offset } => {
                     my_dynasm!(ops
+                        ;; if profile { call_extern!(ops, profiler_tick); }
+
                         // store pc in rd
                         ;; if rd.0 != 0 {
                             my_dynasm!(ops
@@ -502,6 +522,10 @@ impl RVFunction {
         }
 
         // end of function
+        if started_profile {
+            call_extern!(ops, end_profile);
+        }
+
         my_dynasm!(ops
             ; add rsp, 0x28
             ; ret

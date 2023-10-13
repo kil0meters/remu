@@ -1,3 +1,5 @@
+use std::time::Instant;
+
 use anyhow::Result;
 use clap::Parser;
 use elf::{endian::AnyEndian, ElfBytes};
@@ -85,27 +87,34 @@ fn main() -> Result<()> {
             emulator.profile_label(label)?;
         }
 
+        let start = Instant::now();
         emulator.run(args.jit)?;
+        let end = Instant::now();
 
         print!("{}", emulator.stdout);
 
         eprintln!("------------------------------");
         eprintln!("Program exited with code {}", emulator.exit_code.unwrap());
         eprintln!("Instruction count: {}", emulator.inst_counter);
-        eprintln!("Estimated cycle count: {}", emulator.profiler.cycle_count);
-        eprintln!(
-            "Cache hit/miss ratio: {}",
-            emulator.profiler.cache_hit_count as f64 / emulator.profiler.cache_miss_count as f64
-        );
-        eprintln!(
-            "Branch predict/misspredict ratio: {}",
-            emulator.profiler.predicted_branch_count as f64
-                / emulator.profiler.mispredicted_branch_count as f64
-        );
-        eprintln!(
-            "Estimated time to execute on a (bad) 4GHz processor: {}s",
-            emulator.profiler.cycle_count as f64 / 4_000_000_000.0
-        );
+
+        if args.label.is_some() {
+            eprintln!("Estimated cycle count: {}", emulator.profiler.cycle_count);
+            eprintln!(
+                "Cache hit/miss ratio: {}",
+                emulator.profiler.cache_hit_count as f64
+                    / emulator.profiler.cache_miss_count as f64
+            );
+            eprintln!(
+                "Branch predict/misspredict ratio: {}",
+                emulator.profiler.predicted_branch_count as f64
+                    / emulator.profiler.mispredicted_branch_count as f64
+            );
+            eprintln!(
+                "Estimated time on 4GHz processor: {}s",
+                emulator.profiler.cycle_count as f64 / 4_000_000_000.0
+            );
+        }
+        eprintln!("Real time: {}s", (end - start).as_secs_f64());
 
         Ok(())
     }

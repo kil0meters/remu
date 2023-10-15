@@ -301,6 +301,10 @@ impl RVFunction {
             match inst {
                 Inst::Fence => {} // noop
                 Inst::Ecall => {
+                    if profile {
+                        call_extern!(ops, profiler_tick);
+                    }
+
                     call_extern!(ops, syscall);
                 }
                 Inst::Ebreak => {} // noop
@@ -319,11 +323,11 @@ impl RVFunction {
                     my_dynasm!(ops
                         ;; if profile {
                             my_dynasm!(ops
-                                ;; pipeline_stall!(ops, x.rs1)
-
                                 ;; load_reg!(ops, rsi <= rs1)
                                 ; add rsi, offset
                                 ;; add_load_delay!(ops, rd)
+
+                                ;; pipeline_stall!(ops, x.rs1)
                             );
                         }
 

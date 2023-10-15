@@ -1,6 +1,9 @@
 use std::collections::HashSet;
 
-use crate::register::{FReg, Reg};
+use crate::{
+    cache::Cache,
+    register::{FReg, Reg},
+};
 
 pub const CACHE_SIZE: u64 = 0x500;
 
@@ -18,7 +21,7 @@ pub struct Profiler {
     // by default, we assume the branch is not taken.
     // if the address of the branch instruction is inside
     // this hashmap, we take the branch
-    branch_predictor: HashSet<u64>,
+    branch_predictor: Cache<u64, bool, 100>,
 
     // stores the address of the most recently accessed memory location
     // used to calculate cache hits/misses
@@ -39,7 +42,7 @@ impl Profiler {
             cache_miss_count: 0,
             mispredicted_branch_count: 0,
             predicted_branch_count: 0,
-            branch_predictor: HashSet::new(),
+            branch_predictor: Cache::new(),
             last_mem_access: 0,
             running: false,
             ignore_dynamic_linker_instructions: true,
@@ -60,16 +63,20 @@ impl Profiler {
     #[inline]
     pub fn pipeline_stall_xx(&mut self, reg1: Reg, reg2: Reg, pc: u64) {
         if self.is_counted(pc) {
-            self.cycle_count = self.cycle_count.max(self.x_pipeline_delay[reg1]);
-            self.cycle_count = self.cycle_count.max(self.x_pipeline_delay[reg2]);
+            self.cycle_count = self
+                .cycle_count
+                .max(self.x_pipeline_delay[reg1])
+                .max(self.x_pipeline_delay[reg2]);
         }
     }
 
     #[inline]
     pub fn pipeline_stall_xf(&mut self, reg1: Reg, reg2: FReg, pc: u64) {
         if self.is_counted(pc) {
-            self.cycle_count = self.cycle_count.max(self.x_pipeline_delay[reg1]);
-            self.cycle_count = self.cycle_count.max(self.f_pipeline_delay[reg2.0 as usize]);
+            self.cycle_count = self
+                .cycle_count
+                .max(self.x_pipeline_delay[reg1])
+                .max(self.f_pipeline_delay[reg2.0 as usize]);
         }
     }
 
@@ -83,12 +90,15 @@ impl Profiler {
     #[inline]
     pub fn branch_taken(&mut self, pc: u64) {
         if self.is_counted(pc) {
-            if self.branch_predictor.insert(pc) {
-                // mispredicted branch incurs a 4 cycle penalty
-                self.mispredicted_branch_count += 1;
-                self.cycle_count += 4;
-            } else {
-                self.predicted_branch_count += 1;
+            match self.branch_predictor.update(pc, true) {
+                None | Some(false) => {
+                    // mispredicted branch incurs a 4 cycle penalty
+                    self.mispredicted_branch_count += 1;
+                    self.cycle_count += 4;
+                }
+                Some(true) => {
+                    self.predicted_branch_count += 1;
+                }
             }
         }
     }
@@ -96,12 +106,15 @@ impl Profiler {
     #[inline]
     pub fn branch_not_taken(&mut self, pc: u64) {
         if self.is_counted(pc) {
-            if self.branch_predictor.remove(&pc) {
-                // mispredicted branch incurs a 4 cycle penalty
-                self.mispredicted_branch_count += 1;
-                self.cycle_count += 4;
-            } else {
-                self.predicted_branch_count += 1;
+            match self.branch_predictor.update(pc, false) {
+                Some(true) => {
+                    // mispredicted branch incurs a 4 cycle penalty
+                    self.mispredicted_branch_count += 1;
+                    self.cycle_count += 4;
+                }
+                None | Some(false) => {
+                    self.predicted_branch_count += 1;
+                }
             }
         }
     }

@@ -1,9 +1,9 @@
 mod auxvec;
+mod cache;
 pub mod disassembler;
 pub mod error;
 mod files;
 mod instruction;
-mod lru;
 pub mod memory;
 mod profiler;
 mod register;

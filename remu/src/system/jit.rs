@@ -14,9 +14,9 @@ macro_rules! my_dynasm {
     ($ops:ident $($t:tt)*) => {
         dynasm!($ops
             ; .arch x64
-            ; .alias a_emu, rcx
-            ; .alias a_pc, rdx
-            ; .alias a_registers, r8
+            ; .alias a_emu, rdi
+            ; .alias a_pc, rsi
+            ; .alias a_registers, rdx
             $($t)*
         )
     }
@@ -42,25 +42,25 @@ macro_rules! call_extern {
     ($ops:ident, $addr:expr) => {my_dynasm!($ops
         ; mov rax, QWORD $addr as _
         ; call rax
-        ; mov rcx, [rsp + 0x30]
-        ; mov rdx, [rsp + 0x38]
-        ; mov r8,  [rsp + 0x40]
-        ; mov r9,  [rsp + 0x48]
+
+        ; mov rdi, [rsp + 0x8]
+        ; mov rsi, [rsp + 0x10]
+        ; mov rdx, [rsp + 0x20]
     );};
 }
 
 macro_rules! pipeline_stall {
     ($ops:ident, x . $r1:expr) => {
         my_dynasm!($ops
-            ; mov rdx, $r1.0 as _
+            ; mov rsi, $r1.0 as _
             ;; call_extern!($ops, profiler_pipeline_stall_x)
         );
     };
 
     ($ops:ident, x . $r1:expr, x . $r2:expr) => {
         my_dynasm!($ops
-            ; mov rdx, $r1.0 as _
-            ; mov r8, $r2.0 as _
+            ; mov rsi, $r1.0 as _
+            ; mov rdx, $r2.0 as _
             ;; call_extern!($ops, profiler_pipeline_stall_xx)
         );
     };
@@ -96,56 +96,61 @@ macro_rules! branch_impl {
 macro_rules! add_load_delay {
     ($ops:ident, $rd:ident) => {
         my_dynasm!($ops
-            ; mov r8, $rd.0 as _
+            ; mov rdx, $rd.0 as _
             ;; call_extern!($ops, add_load_delay_x)
         );
     };
 }
 
-unsafe extern "win64" fn add_load_delay_x(emu: *mut Emulator, addr: u64, rd: Reg) {
+unsafe extern "sysv64" fn add_load_delay_x(emu: *mut Emulator, addr: u64, rd: Reg) {
     let emulator = unsafe { &mut *emu };
     emulator.profiler.add_load_delay_x(rd, addr, emulator.pc);
 }
 
-unsafe extern "win64" fn profiler_tick(emu: *mut Emulator) {
+unsafe extern "sysv64" fn profiler_tick(emu: *mut Emulator) {
     let emulator = unsafe { &mut *emu };
     emulator.profiler.tick(emulator.pc);
 }
 
-unsafe extern "win64" fn profiler_pipeline_stall_xx(emu: *mut Emulator, reg1: Reg, reg2: Reg) {
+unsafe extern "sysv64" fn profiler_pipeline_stall_xx(emu: *mut Emulator, reg1: Reg, reg2: Reg) {
     let emulator = unsafe { &mut *emu };
+    // println!(
+    //     "pipeilne_stall_xx: pc={:x} reg1={reg1}, reg2={reg2}",
+    //     emulator.pc
+    // );
     emulator.profiler.pipeline_stall_xx(reg1, reg2, emulator.pc);
     emulator.profiler.tick(emulator.pc);
 }
 
-unsafe extern "win64" fn profiler_pipeline_stall_x(emu: *mut Emulator, reg1: Reg) {
+unsafe extern "sysv64" fn profiler_pipeline_stall_x(emu: *mut Emulator, reg1: Reg) {
     let emulator = unsafe { &mut *emu };
+    // println!("pipeilne_stall_x: pc={:x} reg1={reg1}", emulator.pc);
     emulator.profiler.pipeline_stall_x(reg1, emulator.pc);
     emulator.profiler.tick(emulator.pc);
 }
 
 /// returns false if the syscall fails, otherwise true
-unsafe extern "win64" fn syscall(emu: *mut Emulator) -> bool {
+unsafe extern "sysv64" fn syscall(emu: *mut Emulator) -> bool {
     let emulator = unsafe { &mut *emu };
     emulator.syscall().is_ok()
 }
 
-unsafe extern "win64" fn execute_block(emu: *mut Emulator) {
+unsafe extern "sysv64" fn execute_block(emu: *mut Emulator) {
     let emulator = unsafe { &mut *emu };
     emulator.execute_block().expect("Failed to execute block");
 }
 
-unsafe extern "win64" fn branch_not_taken(emu: *mut Emulator) {
+unsafe extern "sysv64" fn branch_not_taken(emu: *mut Emulator) {
     let emulator = unsafe { &mut *emu };
     emulator.profiler.branch_not_taken(emulator.pc);
 }
 
-unsafe extern "win64" fn branch_taken(emu: *mut Emulator) {
+unsafe extern "sysv64" fn branch_taken(emu: *mut Emulator) {
     let emulator = unsafe { &mut *emu };
     emulator.profiler.branch_taken(emulator.pc);
 }
 
-unsafe extern "win64" fn store_u64(emu: *mut Emulator, offset: u64, rs2: u64) {
+unsafe extern "sysv64" fn store_u64(emu: *mut Emulator, offset: u64, rs2: u64) {
     let emulator = unsafe { &mut *emu };
     emulator
         .memory
@@ -153,27 +158,27 @@ unsafe extern "win64" fn store_u64(emu: *mut Emulator, offset: u64, rs2: u64) {
         .expect("Failed to store");
 }
 
-unsafe extern "win64" fn load_u64(emu: *mut Emulator, offset: u64) -> u64 {
+unsafe extern "sysv64" fn load_u64(emu: *mut Emulator, offset: u64) -> u64 {
     let emulator = unsafe { &mut *emu };
     emulator.memory.load(offset).expect("Failed to store")
 }
 
-unsafe extern "win64" fn start_profile(emu: *mut Emulator) {
+unsafe extern "sysv64" fn start_profile(emu: *mut Emulator) {
     let emulator = unsafe { &mut *emu };
     emulator.profiler.running = true;
 }
 
-unsafe extern "win64" fn end_profile(emu: *mut Emulator) {
+unsafe extern "sysv64" fn end_profile(emu: *mut Emulator) {
     let emulator = unsafe { &mut *emu };
     emulator.profiler.running = false;
 }
 
-unsafe extern "win64" fn debug_print_registers(emu: *mut Emulator) {
+unsafe extern "sysv64" fn debug_print_registers(emu: *mut Emulator) {
     let emulator = unsafe { &mut *emu };
     println!("{}", emulator.print_registers());
 }
 
-unsafe extern "win64" fn log_inst(emu: *mut Emulator) {
+unsafe extern "sysv64" fn log_inst(emu: *mut Emulator) {
     let emulator = unsafe { &mut *emu };
     let inst_data = emulator
         .memory
@@ -181,7 +186,7 @@ unsafe extern "win64" fn log_inst(emu: *mut Emulator) {
         .expect("Failed to load instruction");
     let (inst, _step) = Inst::decode(inst_data);
 
-    println!("{}", inst.fmt(emulator.pc));
+    println!("{}, pc={:x}", inst.fmt(emulator.pc), emulator.pc);
 }
 
 const ZERO: i32 = 0;
@@ -200,7 +205,7 @@ pub struct RVFunction {
 impl RVFunction {
     pub fn run(&self, emulator: &mut Emulator) {
         // arguments: emulator, pc, x registers
-        let func: extern "win64" fn(*mut Emulator, *mut u64, *mut u64) =
+        let func: extern "sysv64" fn(*mut Emulator, *mut u64, *mut u64) =
             unsafe { mem::transmute(self.code.ptr(self.start)) };
 
         // emulator
@@ -222,11 +227,11 @@ impl RVFunction {
         let mut ops = Assembler::new().expect("Failed to create assembler");
         let start = ops.offset();
 
-        // prepass
         let mut pc = emulator.pc;
         let mut instructions = Vec::new();
         let mut dynamic_labels = HashMap::new();
 
+        // prepass
         let mut done = false;
         while !done {
             let inst_data = emulator
@@ -266,10 +271,9 @@ impl RVFunction {
 
         my_dynasm!(ops
             ; sub rsp, 0x28
-            ; mov [rsp + 0x30], rcx
-            ; mov [rsp + 0x38], rdx
-            ; mov [rsp + 0x40], r8
-            ; mov [rsp + 0x48], r9
+            ; mov [rsp + 0x8], rdi
+            ; mov [rsp + 0x10], rsi
+            ; mov [rsp + 0x20], rdx
         );
 
         let mut started_profile = false;
@@ -286,6 +290,7 @@ impl RVFunction {
             my_dynasm!(ops
                 ;=>current_label
                 // ;; call_extern!(ops, log_inst)
+                // ;; call_extern!(ops, debug_print_registers)
             );
 
             if NonZeroU64::new(pc) == emulator.profile_start_point {
@@ -316,14 +321,14 @@ impl RVFunction {
                             my_dynasm!(ops
                                 ;; pipeline_stall!(ops, x.rs1)
 
-                                ;; load_reg!(ops, rdx <= rs1)
-                                ; add rdx, offset
+                                ;; load_reg!(ops, rsi <= rs1)
+                                ; add rsi, offset
                                 ;; add_load_delay!(ops, rd)
                             );
                         }
 
-                        ;; load_reg!(ops, rdx <= rs1)
-                        ; add rdx, offset
+                        ;; load_reg!(ops, rsi <= rs1)
+                        ; add rsi, offset
 
                         ;; call_extern!(ops, load_u64)
                         ;; store_reg!(ops, rax => rd)
@@ -338,9 +343,9 @@ impl RVFunction {
                     my_dynasm!(ops
                         ;; if profile { pipeline_stall!(ops, x.rs1, x.rs2); }
 
-                        ;; load_reg!(ops, rdx <= rs1)
-                        ;; load_reg!(ops, r8 <= rs2)
-                        ; add rdx, offset
+                        ;; load_reg!(ops, rsi <= rs1)
+                        ;; load_reg!(ops, rdx <= rs2)
+                        ; add rsi, offset
                         ;; call_extern!(ops, store_u64)
                     );
                 }
